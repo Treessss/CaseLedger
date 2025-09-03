@@ -8,5 +8,6 @@ from .product import Product
 from .account import Account, Recharge, Consumption
 from .order_cost import OrderCost, OrderCostBatch
 from .expense_order import ExpenseOrder
+from .platform_account import PlatformAccount
 
-__all__ = ['db', 'Order', 'Payment', 'Expense', 'FeeConfig', 'ShopifyConfig', 'Product', 'Account', 'Recharge', 'Consumption', 'OrderCost', 'OrderCostBatch', 'ExpenseOrder']
+__all__ = ['db', 'Order', 'Payment', 'Expense', 'FeeConfig', 'ShopifyConfig', 'Product', 'Account', 'Recharge', 'Consumption', 'OrderCost', 'OrderCostBatch', 'ExpenseOrder', 'PlatformAccount']

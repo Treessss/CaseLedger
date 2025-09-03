@@ -159,6 +159,7 @@ export const layout: RunTimeLayoutConfig = ({
  * @doc https://umijs.org/docs/max/request#配置
  */
 export const request: RequestConfig = {
-  baseURL: 'http://127.0.0.1:5000',
+  // 移除baseURL，让请求通过代理处理
+  // baseURL: 'http://127.0.0.1:5000',
   ...errorConfig,
 };

@@ -65,6 +65,12 @@ export default [
     component: './Reports',
   },
   {
+    path: '/platform-accounts',
+    name: 'platformAccounts',
+    icon: 'key',
+    component: './PlatformAccounts',
+  },
+  {
     path: '/settings',
     name: 'settings',
     icon: 'setting',

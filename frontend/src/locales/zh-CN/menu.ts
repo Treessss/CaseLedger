@@ -15,6 +15,7 @@ export default {
   'menu.orders.orders.edit': '编辑订单',
   'menu.orders.edit': '编辑订单',
   'menu.accounts': '账户管理',
+  'menu.platformAccounts': '平台账户管理',
   'menu.expenses': '费用管理',
   'menu.reports': '财务报表',
   'menu.settings': '系统设置',
