@@ -1,8 +1,10 @@
-from flask import request, jsonify
+import time
+from flask import request, jsonify, current_app
 from app.models import Expense, Account, Consumption, Order
 from app import db
 from datetime import datetime
 from sqlalchemy import desc
+from sqlalchemy.exc import OperationalError
 from app.api import bp
 
 @bp.route('/expenses', methods=['GET'])
@@ -135,7 +137,7 @@ def get_expense_categories():
 def create_expense():
     """创建新费用"""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         
         # 验证必需字段
         required_fields = ['date', 'category', 'amount', 'description']
@@ -145,102 +147,114 @@ def create_expense():
                     'success': False, 
                     'message': f'缺少必需字段: {field}'
                 }), 400
-        
-        # 创建新费用
-        expense = Expense(
-            expense_date=datetime.strptime(data['date'], '%Y-%m-%d').date(),
-            category=data['category'],
-            amount=float(data['amount']),  # 转换后的人民币金额
-            currency='CNY',  # 统一为人民币
-            original_amount=data.get('original_amount'),  # 原始金额
-            original_currency=data.get('original_currency'),  # 原始货币
-            exchange_rate=data.get('exchange_rate', 1.0),  # 汇率
-            description=data['description'],
-            vendor=data.get('vendor', ''),
-            reference_id=data.get('reference_id', ''),
-            submitter=data.get('submitter', 'Admin'),
-            account_id=data.get('account_id'),
-            order_id=data.get('order_id'),  # 添加订单关联
-            status=data.get('status', 'completed'),
-            created_at=datetime.now()
-        )
-        
-        # 处理关联订单（如果有）
-        order_ids = data.get('order_ids', [])
-        if order_ids:
-            # 设置第一个订单为主要关联订单（向后兼容）
-            expense.order_id = order_ids[0]
-            
-            # 关联所有订单（多对多关系）
-            for order_id in order_ids:
-                order = Order.query.get(order_id)
-                if order:
-                    expense.orders.append(order)
-        
-        db.session.add(expense)
-        db.session.commit()
-        
-        # 处理账户扣费（如果有）
-        account_id = data.get('account_id')
-        if account_id:
-            # 查找指定账户
-            account = Account.query.get(account_id)
-            if not account:
-                db.session.rollback()
+
+        from decimal import Decimal
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                account_id = data.get('account_id')
+                amount_decimal = Decimal(str(data['amount']))
+                account = None
+
+                if account_id:
+                    account = Account.query.get(account_id)
+                    if not account:
+                        return jsonify({
+                            'success': False,
+                            'message': f'账户不存在: {account_id}'
+                        }), 400
+
+                    if account.balance < amount_decimal:
+                        return jsonify({
+                            'success': False,
+                            'message': f'账户余额不足，当前余额: {account.balance}，需要扣除: {data["amount"]}'
+                        }), 400
+
+                expense = Expense(
+                    expense_date=datetime.strptime(data['date'], '%Y-%m-%d').date(),
+                    category=data['category'],
+                    amount=float(data['amount']),
+                    currency='CNY',
+                    original_amount=data.get('original_amount'),
+                    original_currency=data.get('original_currency'),
+                    exchange_rate=data.get('exchange_rate', 1.0),
+                    description=data['description'],
+                    vendor=data.get('vendor', ''),
+                    reference_id=data.get('reference_id', ''),
+                    submitter=data.get('submitter', 'Admin'),
+                    account_id=account_id,
+                    order_id=data.get('order_id'),
+                    status=data.get('status', 'completed'),
+                    created_at=datetime.now()
+                )
+
+                # 处理关联订单（如果有）
+                order_ids = data.get('order_ids', [])
+                if order_ids:
+                    expense.order_id = order_ids[0]
+                    for order_id in order_ids:
+                        order = Order.query.get(order_id)
+                        if order:
+                            expense.orders.append(order)
+
+                if account:
+                    account.balance -= amount_decimal
+                    account.updated_at = datetime.now()
+
+                    consumption = Consumption(
+                        account_id=account_id,
+                        amount=amount_decimal,
+                        description=f"费用支出: {data['description']}",
+                        consumption_date=datetime.now().date(),
+                        created_at=datetime.now()
+                    )
+                    db.session.add(consumption)
+
+                db.session.add(expense)
+                db.session.commit()
+
                 return jsonify({
-                    'success': False, 
-                    'message': f'账户不存在: {account_id}'
-                }), 400
-            
-            # 检查账户余额是否足够
-            from decimal import Decimal
-            amount_decimal = Decimal(str(data['amount']))
-            if account.balance < amount_decimal:
+                    'success': True,
+                    'message': '费用添加成功',
+                    'data': {
+                        'id': expense.id,
+                        'date': expense.expense_date.strftime('%Y-%m-%d'),
+                        'category': expense.category,
+                        'amount': float(expense.amount),
+                        'currency': expense.currency,
+                        'original_amount': float(expense.original_amount) if expense.original_amount else None,
+                        'original_currency': expense.original_currency,
+                        'exchange_rate': float(expense.exchange_rate) if expense.exchange_rate else 1.0,
+                        'description': expense.description,
+                        'vendor': expense.vendor,
+                        'reference_id': expense.reference_id,
+                        'submitter': expense.submitter,
+                        'status': expense.status
+                    }
+                })
+            except OperationalError as e:
                 db.session.rollback()
-                return jsonify({
-                    'success': False, 
-                    'message': f'账户余额不足，当前余额: {account.balance}，需要扣除: {data["amount"]}'
-                }), 400
-            
-            # 扣除账户余额
-            account.balance -= amount_decimal
-            account.updated_at = datetime.now()
-            
-            # 创建消费记录
-            consumption = Consumption(
-                account_id=account_id,
-                amount=amount_decimal,
-                description=f"费用支出: {data['description']}",
-                consumption_date=datetime.now().date(),
-                created_at=datetime.now()
-            )
-            
-            db.session.add(consumption)
-            db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': '费用添加成功',
-            'data': {
-                'id': expense.id,
-                'date': expense.expense_date.strftime('%Y-%m-%d'),
-                'category': expense.category,
-                'amount': float(expense.amount),
-                'currency': expense.currency,
-                'original_amount': float(expense.original_amount) if expense.original_amount else None,
-                'original_currency': expense.original_currency,
-                'exchange_rate': float(expense.exchange_rate) if expense.exchange_rate else 1.0,
-                'description': expense.description,
-                'vendor': expense.vendor,
-                'reference_id': expense.reference_id,
-                'submitter': data.get('submitter', 'Admin'),
-                'status': 'completed'
-            }
-        })
+                if "database is locked" in str(e).lower() and attempt < max_retries:
+                    current_app.logger.warning(
+                        f"Create expense failed by database lock, retrying (attempt {attempt})"
+                    )
+                    time.sleep(0.2 * attempt)
+                    continue
+                current_app.logger.exception("Create expense failed")
+                return jsonify({'success': False, 'message': str(e)}), 500
+            except ValueError:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': '日期格式错误'}), 400
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.exception("Create expense failed")
+                return jsonify({'success': False, 'message': str(e)}), 500
     except ValueError as e:
         return jsonify({'success': False, 'message': '日期格式错误'}), 400
     except Exception as e:
         db.session.rollback()
+        current_app.logger.exception("Create expense request failed")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @bp.route('/expenses/<int:expense_id>', methods=['PUT'])
@@ -251,17 +265,37 @@ def update_expense(expense_id):
         data = request.get_json()
         
         # 更新字段
+        if 'date' in data:
+            expense.expense_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
         if 'expense_date' in data:
             expense.expense_date = datetime.strptime(data['expense_date'], '%Y-%m-%d').date()
-        if 'expense_type' in data:
-            expense.expense_type = data['expense_type']
+        if 'category' in data:
+            expense.category = data['category']
         if 'amount' in data:
             expense.amount = float(data['amount'])
         if 'description' in data:
             expense.description = data['description']
-        if 'notes' in data:
-            expense.notes = data['notes']
+        if 'submitter' in data:
+            expense.submitter = data['submitter']
+        if 'status' in data:
+            expense.status = data['status']
+        if 'vendor' in data:
+            expense.vendor = data['vendor']
+        if 'reference_id' in data:
+            expense.reference_id = data['reference_id']
+        if 'account_id' in data:
+            expense.account_id = data['account_id']
         
+        # 处理关联订单
+        if 'order_ids' in data:
+            # 清除现有关联
+            expense.orders.clear()
+            # 添加新关联
+            if data['order_ids']:
+                orders = Order.query.filter(Order.id.in_(data['order_ids'])).all()
+                expense.orders.extend(orders)
+        
+        expense.updated_at = datetime.utcnow()
         db.session.commit()
         
         return jsonify({
@@ -269,11 +303,15 @@ def update_expense(expense_id):
             'message': '费用更新成功',
             'data': {
                 'id': expense.id,
-                'expense_date': expense.expense_date.strftime('%Y-%m-%d'),
-                'expense_type': expense.expense_type,
+                'date': expense.expense_date.strftime('%Y-%m-%d'),
+                'category': expense.category,
                 'amount': float(expense.amount),
                 'description': expense.description,
-                'notes': expense.notes
+                'submitter': expense.submitter,
+                'status': expense.status,
+                'vendor': expense.vendor,
+                'reference_id': expense.reference_id,
+                'account_id': expense.account_id
             }
         })
     except ValueError as e:

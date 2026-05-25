@@ -307,13 +307,13 @@ const Settings: React.FC = () => {
       let data;
       if (editingFee) {
         // 更新费用配置
-        data = await request(`/api/settings/fee-configs/${editingFee.id}`, {
+        data = await request(`/api/settings/fees/${editingFee.id}`, {
           method: 'PUT',
           data: requestData,
         });
       } else {
         // 添加新费用配置
-        data = await request('/api/settings/fee-configs', {
+        data = await request('/api/settings/fees', {
           method: 'POST',
           data: requestData,
         });

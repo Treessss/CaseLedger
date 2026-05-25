@@ -119,6 +119,16 @@ class FeeConfig(db.Model):
                 'is_active': True
             },
             {
+                'fee_type': 'payment',
+                'fee_name': 'Shopify支付手续费',
+                'description': 'Shopify Payments 支付手续费',
+                'calculation_method': 'percentage_plus_fixed',
+                'percentage_rate': 5.8,
+                'fixed_amount': 0.30,
+                'currency': 'USD',
+                'is_active': True
+            },
+            {
                 'fee_type': 'platform',
                 'fee_name': 'Shopify平台费',
                 'description': 'Shopify平台交易费',

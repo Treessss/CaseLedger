@@ -62,13 +62,24 @@ const PlatformAccounts: React.FC = () => {
   // 获取平台账户列表
   const fetchPlatformAccounts = async (params: any) => {
     try {
+      // 构建搜索参数
+      const searchParams: any = {
+        page: params.current,
+        per_page: params.pageSize,
+      };
+      
+      // 添加平台筛选
+      if (params.platform) {
+        searchParams.platform = params.platform;
+      }
+      
+      // 添加搜索关键词（用户名搜索）
+      if (params.username) {
+        searchParams.search = params.username;
+      }
+      
       const response = await request('/api/platform-accounts', {
-        params: {
-          page: params.current,
-          per_page: params.pageSize,
-          platform: params.platform,
-          search: params.search,
-        },
+        params: searchParams,
       });
 
       if (response.success) {
@@ -233,6 +244,7 @@ const PlatformAccounts: React.FC = () => {
       dataIndex: 'username',
       key: 'username',
       width: 200,
+      hideInSearch: false,
       render: (_, record) => (
         <Space>
           <span>{record.username}</span>

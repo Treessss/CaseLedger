@@ -1,10 +1,10 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Card, Col, Row, DatePicker, Select, Button, Table, Divider, Spin, message } from 'antd';
 import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { ColumnsType } from 'antd/es/table';
 import { getFinancialReport, exportReport, type FinancialData, type ReportParams } from '@/services/reports';
-import dayjs from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 
 const { RangePicker } = DatePicker;
 const { Option } = Select;
@@ -12,11 +12,35 @@ const { Option } = Select;
 
 
 const Reports: React.FC = () => {
+  const getDefaultRangeByType = (type: string): [Dayjs, Dayjs] => {
+    const end = dayjs().endOf('day');
+    if (type === 'daily') {
+      // 日报默认当前整月
+      return [dayjs().startOf('month'), dayjs().endOf('month')];
+    }
+    if (type === 'weekly') {
+      // 周报默认当前月份
+      return [dayjs().startOf('month'), end];
+    }
+    if (type === 'monthly') {
+      // 当前月 + 前5个月（近半年）
+      return [dayjs().startOf('month').subtract(5, 'month'), end];
+    }
+    if (type === 'quarterly' || type === 'yearly') {
+      // 季报/年报默认当年
+      return [dayjs().startOf('year'), end];
+    }
+    return [dayjs().subtract(30, 'day').startOf('day'), end];
+  };
+
   const [reportType, setReportType] = useState<string>('monthly');
-  const [dateRange, setDateRange] = useState<any>(null);
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(
+    getDefaultRangeByType('monthly'),
+  );
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<FinancialData[]>([]);
   const [summary, setSummary] = useState<any>(null);
+  const requestSeqRef = useRef(0);
 
   const columns: ColumnsType<FinancialData> = [
     {
@@ -52,10 +76,12 @@ const Reports: React.FC = () => {
   ];
 
   useEffect(() => {
+    if (!dateRange) return;
     fetchReportData();
   }, [reportType, dateRange]);
 
   const fetchReportData = async () => {
+    const requestSeq = ++requestSeqRef.current;
     try {
       setLoading(true);
       const params: ReportParams = {
@@ -65,6 +91,8 @@ const Reports: React.FC = () => {
       };
       
       const response = await getFinancialReport(params);
+      // 只接受最新请求的返回，避免旧请求覆盖最新筛选结果
+      if (requestSeq !== requestSeqRef.current) return;
       if (response.success) {
         setData(response.data.financial_data || []);
         setSummary(response.data.summary || {});
@@ -75,7 +103,9 @@ const Reports: React.FC = () => {
       message.error('获取报表数据失败');
       console.error('Failed to fetch report data:', error);
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -114,8 +144,7 @@ const Reports: React.FC = () => {
   };
 
   const handleGenerateReport = () => {
-    console.log('生成报表:', { reportType, dateRange });
-    // 这里添加生成报表的逻辑
+    fetchReportData();
   };
 
   return (
@@ -127,10 +156,13 @@ const Reports: React.FC = () => {
       <Card title="报表筛选" style={{ marginBottom: 16 }}>
         <Row gutter={[16, 16]} align="middle">
           <Col xs={24} sm={8} md={6}>
-            <label>报表类型：</label>
+            <div>报表类型：</div>
             <Select
               value={reportType}
-              onChange={setReportType}
+              onChange={(value) => {
+                setReportType(value);
+                setDateRange(getDefaultRangeByType(value));
+              }}
               style={{ width: '100%', marginTop: 4 }}
             >
               <Option value="daily">日报表</Option>
@@ -141,7 +173,7 @@ const Reports: React.FC = () => {
             </Select>
           </Col>
           <Col xs={24} sm={10} md={8}>
-            <label>时间范围：</label>
+            <div>时间范围：</div>
             <RangePicker
               value={dateRange}
               onChange={setDateRange}

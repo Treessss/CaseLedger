@@ -23,6 +23,14 @@ print("=" * 50)
 # 启动Celery Worker
 if __name__ == '__main__':
     from celery_app import celery
-    
+    from config import Config
+
+    worker_args = ['worker', '--loglevel=info', '--hostname=caseledger-worker@%h', '--queues=sync,test']
+    is_sqlite = str(Config.SQLALCHEMY_DATABASE_URI).startswith('sqlite')
+
+    if is_sqlite:
+        # SQLite不适合多进程并发写入，使用单进程避免database is locked
+        worker_args.extend(['--pool=solo', '--concurrency=1'])
+
     # 启动worker进程，监听所有队列
-    celery.start(['worker', '--loglevel=info', '--queues=sync,test'])
+    celery.start(worker_args)

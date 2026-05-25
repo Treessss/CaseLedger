@@ -1,238 +1,269 @@
-# CaseLedger - Shopify手机壳财务管理系统
+# CaseLedger
 
-一个专为Shopify手机壳店铺设计的财务管理系统，支持自动同步订单数据、计算各种手续费、管理运营成本并生成详细的财务报表。
-
-## 功能特性
-
-### 📊 订单管理
-- 自动从Shopify同步订单数据
-- 支持PayPal和Stripe支付方式
-- 自动计算支付手续费（固定费用+百分比费用）
-- 计算Shopify平台手续费
-- 实时计算实际到账金额和利润率
-
-### 💰 费用管理
-- Facebook广告费用记录
-- 方果工厂手机壳成本管理
-- 4PX物流费用跟踪
-- 支持批量导入和手动添加
-- 费用分类和供应商管理
-
-### 📈 财务分析
-- 收入趋势分析
-- 利润率统计
-- 成本结构分析
-- 日报、月报、年报生成
-- 支持Excel导出
-
-### ⚙️ 系统配置
-- PayPal/Stripe手续费率配置
-- Shopify API集成设置
-- 自动同步任务调度
-- 灵活的费用类别管理
+CaseLedger 是一个面向 Shopify 店铺的财务管理系统，覆盖订单同步、费用管理、平台账户、报表分析和自动化任务调度。
 
 ## 技术栈
 
-- **后端**: Python Flask
-- **数据库**: MySQL
-- **前端**: Bootstrap 5 + jQuery
-- **图表**: Chart.js
-- **任务队列**: Celery + Redis
-- **API集成**: Shopify API, PayPal API, Stripe API
+- 后端：Flask + SQLAlchemy + Flask-Migrate
+- 异步任务：Celery + Redis
+- 前端：Umi Max / Ant Design Pro + React + TypeScript
+- 数据库：SQLite 默认，支持通过 `DATABASE_URL` 切换
+- 第三方：Shopify API、Stripe、PayPal、汇率转换
 
-## 安装部署
+## 主要功能
 
-### 1. 环境要求
+- Shopify 订单同步与订单明细管理
+- 费用录入、分类、批量删除与账户扣费
+- 平台账户管理
+- 财务报表、收入趋势、费用分析、利润分析
+- 手续费配置与 Shopify 配置管理
+- Celery 定时同步与后台任务
+
+## 项目结构
+
+```text
+CaseLedger/
+├── app/
+│   ├── api/              # 后端 API
+│   ├── models/           # 数据模型
+│   ├── services/         # 业务服务层
+│   └── main/             # 页面/视图路由
+├── frontend/             # 前端工程
+├── run.py                # Flask 启动入口
+├── init_db.py            # 数据库初始化
+├── celery_app.py         # Celery 配置
+├── start_celery_worker.py
+├── start_celery_beat.py
+├── start_celery_full_worker.py
+├── quick_start.sh        # macOS 快速启动
+├── manage_services.sh    # macOS LaunchAgents 管理
+├── start_tunnel.sh       # 本地端口隧道
+└── launchd/              # LaunchAgents plist
+```
+
+## 环境要求
 
 - Python 3.8+
-- MySQL 5.7+
-- Redis (用于Celery任务队列)
+- Node.js 20+
+- Redis
+- Git
 
-### 2. 克隆项目
+## 本地启动
 
-```bash
-git clone <repository-url>
-cd CaseLedger
-```
-
-### 3. 安装依赖
+### 1. 后端
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+python init_db.py
+python run.py
 ```
 
-### 4. 配置环境变量
+后端默认地址：`http://127.0.0.1:5000`
 
-复制环境变量模板并配置：
+### 2. 前端
 
 ```bash
-cp .env.example .env
+cd frontend
+npm install
+npm run start:dev
 ```
 
-编辑 `.env` 文件，配置以下信息：
+前端默认端口：`http://127.0.0.1:8000`
+
+### 3. Celery
+
+```bash
+python start_celery_worker.py
+python start_celery_beat.py
+python start_celery_full_worker.py
+```
+
+## 一键启动
+
+macOS 下可以使用：
+
+```bash
+./quick_start.sh
+```
+
+或通过 LaunchAgents 管理：
+
+```bash
+./manage_services.sh install
+./manage_services.sh start
+```
+
+需要公网隧道时可运行：
+
+```bash
+./start_tunnel.sh
+```
+
+## 环境变量
+
+复制 `.env.example` 为 `.env` 后配置：
 
 ```env
-# 数据库配置
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_mysql_password
-MYSQL_DB=case_ledger
+FLASK_ENV=development
+FLASK_DEBUG=True
+SECRET_KEY=your-secret-key
 
-# Shopify API配置
-SHOPIFY_API_KEY=your_shopify_api_key
-SHOPIFY_API_SECRET=your_shopify_api_secret
-SHOPIFY_ACCESS_TOKEN=your_shopify_access_token
-SHOPIFY_SHOP_URL=your-shop-name.myshopify.com
+DATABASE_URL=sqlite:///case_ledger.db
+REDIS_URL=redis://localhost:6379/0
 
-# PayPal配置
-PAYPAL_CLIENT_ID=your_paypal_client_id
-PAYPAL_CLIENT_SECRET=your_paypal_client_secret
-PAYPAL_MODE=sandbox  # 生产环境改为 live
+SHOPIFY_API_KEY=your-shopify-api-key
+SHOPIFY_API_SECRET=your-shopify-api-secret
+SHOPIFY_ACCESS_TOKEN=your-shopify-access-token
+SHOPIFY_SHOP_URL=your-shop.myshopify.com
+SHOPIFY_WEBHOOK_SECRET=your-webhook-secret
 
-# Stripe配置
-STRIPE_SECRET_KEY=your_stripe_secret_key
-STRIPE_PUBLISHABLE_KEY=your_stripe_publishable_key
+PAYPAL_CLIENT_ID=your-paypal-client-id
+PAYPAL_CLIENT_SECRET=your-paypal-client-secret
+PAYPAL_MODE=sandbox
+
+STRIPE_SECRET_KEY=your-stripe-secret-key
+STRIPE_PUBLISHABLE_KEY=your-stripe-publishable-key
+
+HOST=127.0.0.1
+PORT=5000
 ```
 
-### 5. 初始化数据库
+## 初始化数据库
 
 ```bash
 python init_db.py
 ```
 
-### 6. 启动应用
+脚本会创建表并初始化默认手续费配置。
+
+## 常用命令
+
+### 后端
 
 ```bash
-python app.py
+python run.py
+python init_db.py
+python start_celery_worker.py
+python start_celery_beat.py
+python start_celery_full_worker.py
 ```
 
-应用将在 `http://localhost:5000` 启动。
-
-### 7. 启动后台任务（可选）
-
-如需自动同步功能，启动Celery worker：
+### 前端
 
 ```bash
-# 启动Redis
-redis-server
-
-# 启动Celery worker
-celery -A app.celery worker --loglevel=info
-
-# 启动Celery beat（定时任务）
-celery -A app.celery beat --loglevel=info
+cd frontend
+npm run start:dev
+npm run lint
+npm test
+npm run build
 ```
 
-## 使用指南
+## API 概览
 
-### 1. 首次配置
+### 登录
 
-1. 访问系统设置页面配置手续费率
-2. 确认Shopify API连接正常
-3. 测试PayPal/Stripe API连接
+- `POST /api/login/account`
+- `POST /api/login/outLogin`
+- `POST /api/login/captcha`
 
-### 2. 数据同步
+### 订单
 
-- 手动同步：在仪表板点击"同步订单"按钮
-- 自动同步：配置Celery定时任务
+- `GET /api/orders`
+- `GET /api/orders/<id>`
+- `PUT /api/orders/<id>`
+- `GET /api/orders/recent`
+- `GET /api/orders/stats`
 
-### 3. 费用管理
+### 费用
 
-- 在费用管理页面添加各类运营费用
-- 支持Excel批量导入
-- 可按日期范围筛选和统计
+- `GET /api/expenses`
+- `POST /api/expenses`
+- `PUT /api/expenses/<id>`
+- `DELETE /api/expenses/<id>`
+- `POST /api/expenses/batch-delete`
+- `GET /api/expenses/summary`
+- `GET /api/expenses/categories`
 
-### 4. 报表查看
+### 报表
 
-- 仪表板提供实时概览
-- 报表页面提供详细分析
-- 支持导出Excel格式
+- `GET /api/reports/financial-summary`
+- `GET /api/reports/financial`
+- `GET /api/reports/revenue-trend`
+- `GET /api/reports/expense-analysis`
+- `GET /api/reports/profit-analysis`
 
-## API文档
+### 账户
 
-### 订单相关
+- `GET /api/accounts`
+- `POST /api/accounts`
+- `PUT /api/accounts/<id>`
+- `DELETE /api/accounts/<id>`
+- `GET /api/accounts/<id>/recharges`
+- `POST /api/accounts/<id>/recharges`
+- `GET /api/accounts/<id>/consumptions`
 
-- `GET /api/orders` - 获取订单列表
-- `POST /api/sync/orders` - 同步Shopify订单
-- `GET /api/orders/recent` - 获取最近订单
+### 平台账户
 
-### 费用相关
+- `GET /api/platform-accounts`
+- `POST /api/platform-accounts`
+- `PUT /api/platform-accounts/<id>`
+- `DELETE /api/platform-accounts/<id>`
+- `GET /api/platform-accounts/platforms`
+- `GET /api/platform-accounts/<id>/password`
 
-- `GET /api/expenses` - 获取费用列表
-- `POST /api/expenses` - 添加费用记录
-- `PUT /api/expenses/<id>` - 更新费用记录
-- `DELETE /api/expenses/<id>` - 删除费用记录
+### 设置
 
-### 报表相关
+- `GET /api/settings/shopify`
+- `POST /api/settings/shopify`
+- `POST /api/settings/shopify/test`
+- `POST /api/settings/shopify/sync`
+- `GET /api/settings/fees`
+- `POST /api/settings/fees`
+- `PUT /api/settings/fees/<id>`
+- `DELETE /api/settings/fees/<id>`
 
-- `GET /api/reports/revenue` - 收入报表
-- `GET /api/reports/profit` - 利润报表
-- `GET /api/reports/expenses` - 费用报表
-- `GET /api/reports/export` - 导出Excel报表
+### 汇率
 
-### 配置相关
+- `POST /api/exchange/convert`
+- `GET /api/exchange/rates`
+- `GET /api/exchange/supported-currencies`
 
-- `GET /api/settings/fees` - 获取手续费配置
-- `PUT /api/settings/fees/<id>` - 更新手续费配置
+## 页面功能
 
-## 数据库结构
+- 仪表板查看经营概览
+- 订单、费用、账户、平台账户的增删改查
+- 报表筛选、查看和打印
+- Shopify 配置保存、测试和同步
 
-### 主要表结构
+## 鉴权说明
 
-- `orders` - 订单表
-- `payments` - 支付记录表
-- `expenses` - 费用支出表
-- `fee_configs` - 手续费配置表
-- `products` - 商品表
+API 默认需要 `Authorization: Bearer <token>`。
 
-## 开发说明
+- 登录接口返回 JWT
+- 兼容旧的简单 token：`123`
+- 登录中间件位于 `app/__init__.py`
 
-### 项目结构
+## 定时任务
 
-```
-CaseLedger/
-├── app/
-│   ├── __init__.py
-│   ├── models/          # 数据模型
-│   ├── api/             # API路由
-│   ├── main/            # 主要路由
-│   ├── services/        # 业务逻辑
-│   ├── utils/           # 工具函数
-│   ├── templates/       # HTML模板
-│   └── static/          # 静态文件
-├── config.py            # 配置文件
-├── app.py              # 应用入口
-├── init_db.py          # 数据库初始化
-├── requirements.txt    # 依赖包
-└── README.md          # 说明文档
-```
+Celery 配置在 `celery_app.py`：
 
-### 代码规范
+- `sync-shopify-orders-full-noon`
+- `sync-shopify-orders-full-midnight`
+- `sync-shopify-orders-hourly`
+- `sync-shopify-products`
+- `test-shopify-connection`
 
-- 遵循PEP 8代码规范
-- 使用类型注解
-- 编写单元测试
-- 添加适当的注释和文档
+## 部署
 
-## 常见问题
+服务器部署和 macOS 常驻运行说明分别可参考：
 
-### Q: Shopify API连接失败
-A: 检查API密钥和访问令牌是否正确，确认店铺URL格式正确。
-
-### Q: 手续费计算不准确
-A: 在系统设置中检查PayPal/Stripe手续费率配置是否与实际一致。
-
-### Q: 数据同步缓慢
-A: 可以配置Celery后台任务来异步处理大量数据同步。
-
-### Q: 报表数据为空
-A: 确认已同步订单数据，并检查日期筛选条件。
+- `DEPLOYMENT_GUIDE.md`
+- `manage_services.sh`
+- `launchd/`
 
 ## 许可证
 
-MIT License
-
-## 联系方式
-
-如有问题或建议，请提交Issue或联系开发团队。
+未单独声明

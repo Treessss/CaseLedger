@@ -17,7 +17,7 @@ celery.conf.update(
     # 任务路由
     task_routes={
         'app.tasks.sync_shopify_orders_task': {'queue': 'sync'},
-        'app.tasks.sync_shopify_orders_full_task': {'queue': 'sync'},
+        'app.tasks.sync_shopify_orders_full_task': {'queue': 'sync_full'},
         'app.tasks.sync_shopify_orders_daily_task': {'queue': 'sync'},
         'app.tasks.sync_shopify_products_task': {'queue': 'sync'},
         'app.tasks.test_connection_task': {'queue': 'test'},

@@ -9,9 +9,45 @@ class ExchangeRateService:
     
     def __init__(self):
         self.cache = {}
-        self.cache_duration = 3600  # 缓存1小时
+        self.cache_duration = 3600  # 成功汇率缓存1小时
+        self.fallback_cache_duration = 300  # 默认汇率缓存5分钟，避免失败时反复请求外部API
+        self.request_timeout = 3
         # 支持的货币列表
         self.supported_currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CNY']
+        self.default_rates = {
+            'USD_CNY': Decimal('7.2'),
+            'EUR_CNY': Decimal('7.8'),
+            'GBP_CNY': Decimal('9.1'),
+            'CAD_CNY': Decimal('5.3'),
+            'AUD_CNY': Decimal('4.8'),
+            'JPY_CNY': Decimal('0.048')
+        }
+
+    def _get_cached_rate(self, cache_key: str, current_time: float) -> Optional[Decimal]:
+        """读取缓存汇率，并根据成功/回退类型应用不同的过期时间。"""
+        cached_data = self.cache.get(cache_key)
+        if not cached_data:
+            return None
+
+        ttl = self.fallback_cache_duration if cached_data.get('is_fallback') else self.cache_duration
+        if current_time - cached_data['timestamp'] < ttl:
+            return cached_data['rate']
+
+        self.cache.pop(cache_key, None)
+        return None
+
+    def _cache_rate(self, cache_key: str, rate: Decimal, current_time: float, is_fallback: bool = False) -> None:
+        self.cache[cache_key] = {
+            'rate': rate,
+            'timestamp': current_time,
+            'is_fallback': is_fallback,
+        }
+
+    def _get_request_timeout(self) -> int:
+        try:
+            return int(current_app.config.get('EXCHANGE_RATE_REQUEST_TIMEOUT', self.request_timeout))
+        except RuntimeError:
+            return self.request_timeout
     
     def get_exchange_rate(self, from_currency: str, to_currency: str) -> Optional[Decimal]:
         """获取两种货币之间的汇率"""
@@ -22,33 +58,20 @@ class ExchangeRateService:
         current_time = time.time()
         
         # 检查缓存
-        if cache_key in self.cache:
-            cached_data = self.cache[cache_key]
-            if current_time - cached_data['timestamp'] < self.cache_duration:
-                return cached_data['rate']
+        cached_rate = self._get_cached_rate(cache_key, current_time)
+        if cached_rate is not None:
+            return cached_rate
         
         # 尝试从多个API获取汇率
         rate = self._fetch_rate_from_apis(from_currency, to_currency)
         
         if rate:
-            # 缓存汇率
-            self.cache[cache_key] = {
-                'rate': rate,
-                'timestamp': current_time
-            }
+            self._cache_rate(cache_key, rate, current_time, is_fallback=False)
             return rate
         
         # 如果所有API都失败，返回默认汇率
-        default_rates = {
-            'USD_CNY': Decimal('7.2'),
-            'EUR_CNY': Decimal('7.8'),
-            'GBP_CNY': Decimal('9.1'),
-            'CAD_CNY': Decimal('5.3'),
-            'AUD_CNY': Decimal('4.8'),
-            'JPY_CNY': Decimal('0.048')
-        }
-        
-        default_rate = default_rates.get(cache_key, Decimal('1'))
+        default_rate = self.default_rates.get(cache_key, Decimal('1'))
+        self._cache_rate(cache_key, default_rate, current_time, is_fallback=True)
         try:
             current_app.logger.warning(f"无法获取实时汇率，使用默认汇率 {from_currency} -> {to_currency}: {default_rate}")
         except RuntimeError:
@@ -87,7 +110,7 @@ class ExchangeRateService:
         """从 exchangerate-api.com 获取汇率"""
         try:
             url = f"https://api.exchangerate-api.com/v4/latest/{from_currency}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=self._get_request_timeout())
             response.raise_for_status()
             
             data = response.json()
@@ -119,7 +142,7 @@ class ExchangeRateService:
                 return None
             
             url = f"http://data.fixer.io/api/latest?access_key={api_key}&base={from_currency}&symbols={to_currency}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=self._get_request_timeout())
             response.raise_for_status()
             
             data = response.json()
@@ -143,7 +166,7 @@ class ExchangeRateService:
         try:
             # 使用免费的 exchangerate.host API
             url = f"https://api.exchangerate.host/latest?base={from_currency}&symbols={to_currency}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=self._get_request_timeout())
             response.raise_for_status()
             
             data = response.json()

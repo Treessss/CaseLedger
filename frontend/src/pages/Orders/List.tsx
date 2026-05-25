@@ -50,12 +50,12 @@ const OrderList: React.FC = () => {
       width: 120,
       hideInSearch: true,
     },
-    {
-      title: '客户名称',
-      dataIndex: 'customer_name',
-      key: 'customer_name',
-      width: 120,
-    },
+    // {
+    //   title: '客户名称',
+    //   dataIndex: 'customer_name',
+    //   key: 'customer_name',
+    //   width: 120,
+    // },
 
     {
       title: '订单金额',

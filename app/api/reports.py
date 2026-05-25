@@ -6,6 +6,118 @@ from sqlalchemy import func, and_
 from app.api import bp
 from app.services.exchange_rate_service import exchange_rate_service
 
+
+def _build_order_datetime_range(start_date, end_date):
+    """将日期区间转换为订单时间区间：[start_date 00:00:00, end_date+1 00:00:00)。"""
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime_exclusive = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+    return start_datetime, end_datetime_exclusive
+
+
+def _get_default_report_range(report_type):
+    """获取默认报表日期范围。"""
+    today = datetime.now().date()
+    if report_type == 'daily':
+        # 日报默认当前整月（从月初到月末）
+        start_date = today.replace(day=1)
+        if today.month == 12:
+            end_date = datetime(today.year + 1, 1, 1).date() - timedelta(days=1)
+        else:
+            end_date = datetime(today.year, today.month + 1, 1).date() - timedelta(days=1)
+        return start_date, end_date
+    if report_type == 'weekly':
+        # 周报默认当前月份（从月初到今天）
+        return today.replace(day=1), today
+    if report_type == 'monthly':
+        # 月报默认近半年（当前月+前5个月）
+        start_date = today.replace(day=1)
+        for _ in range(5):
+            if start_date.month == 1:
+                start_date = start_date.replace(year=start_date.year - 1, month=12)
+            else:
+                start_date = start_date.replace(month=start_date.month - 1)
+        return start_date, today
+    if report_type in ['quarterly', 'yearly']:
+        # 季报/年报默认当年
+        return datetime(today.year, 1, 1).date(), today
+    return today - timedelta(days=30), today
+
+
+def _get_quarter_start_date(date_value):
+    quarter_start_month = ((date_value.month - 1) // 3) * 3 + 1
+    return date_value.replace(month=quarter_start_month, day=1)
+
+
+def _get_quarter_end_date(date_value):
+    quarter_start = _get_quarter_start_date(date_value)
+    if quarter_start.month == 10:
+        next_quarter_start = datetime(quarter_start.year + 1, 1, 1).date()
+    else:
+        next_quarter_start = datetime(quarter_start.year, quarter_start.month + 3, 1).date()
+    return next_quarter_start - timedelta(days=1)
+
+
+def _calculate_income_cny(orders):
+    total_income = 0.0
+    for order in orders:
+        if order.financial_status in ['paid', 'partially_paid'] and order.actual_received and order.currency:
+            if order.currency == 'CNY':
+                total_income += float(order.actual_received)
+            else:
+                total_income += float(
+                    exchange_rate_service.convert_to_cny(float(order.actual_received), order.currency)
+                )
+    return total_income
+
+
+def _calculate_expense_cny(start_date, end_date, order_start_dt, order_end_dt_exclusive):
+    # 费用记录
+    expenses = db.session.query(Expense).filter(
+        and_(Expense.expense_date >= start_date, Expense.expense_date <= end_date)
+    ).all()
+
+    total_expense = 0.0
+    for expense in expenses:
+        if expense.amount and expense.currency:
+            if expense.currency == 'CNY':
+                total_expense += float(expense.amount)
+            else:
+                total_expense += float(
+                    exchange_rate_service.convert_to_cny(float(expense.amount), expense.currency)
+                )
+
+    # 订单成本（本身为人民币）
+    order_cost_total = db.session.query(
+        func.sum(OrderCost.shipping_cost + OrderCost.fangguo_cost + OrderCost.other_cost)
+    ).join(Order).filter(
+        and_(
+            Order.created_at >= order_start_dt,
+            Order.created_at < order_end_dt_exclusive,
+            OrderCost.status == 'confirmed',
+        )
+    ).scalar() or 0
+
+    return total_expense + float(order_cost_total)
+
+
+def _get_period_financial_data(start_date, end_date, label):
+    order_start_dt, order_end_dt_exclusive = _build_order_datetime_range(start_date, end_date)
+
+    orders = db.session.query(Order).filter(
+        and_(Order.created_at >= order_start_dt, Order.created_at < order_end_dt_exclusive)
+    ).all()
+
+    income_cny = _calculate_income_cny(orders)
+    expense_cny = _calculate_expense_cny(start_date, end_date, order_start_dt, order_end_dt_exclusive)
+    profit_cny = income_cny - expense_cny
+
+    return {
+        'date': label,
+        'income': round(income_cny, 2),
+        'expense': round(expense_cny, 2),
+        'profit': round(profit_cny, 2),
+    }
+
 @bp.route('/reports/financial-summary', methods=['GET'])
 def get_financial_summary():
     """获取财务概览"""
@@ -26,10 +138,12 @@ def get_financial_summary():
         else:
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+        order_start_dt, order_end_dt_exclusive = _build_order_datetime_range(start_date, end_date)
         
         # 计算总收入（订单金额，统一换算为人民币）
         orders = db.session.query(Order).filter(
-            and_(Order.created_at >= start_date, Order.created_at <= end_date)
+            and_(Order.created_at >= order_start_dt, Order.created_at < order_end_dt_exclusive)
         ).all()
         
         total_revenue_cny = 0
@@ -77,7 +191,7 @@ def get_financial_summary():
         
         # 订单数量
         order_count = db.session.query(func.count(Order.id)).filter(
-            and_(Order.created_at >= start_date, Order.created_at <= end_date)
+            and_(Order.created_at >= order_start_dt, Order.created_at < order_end_dt_exclusive)
         ).scalar() or 0
         
         return jsonify({
@@ -107,10 +221,9 @@ def get_financial_report():
         end_date = request.args.get('end_date')
         report_type = request.args.get('report_type', 'monthly')
         
-        # 默认最近30天
+        # 默认范围由报表类型决定
         if not start_date or not end_date:
-            end_date = datetime.now().date()
-            start_date = end_date - timedelta(days=30)
+            start_date, end_date = _get_default_report_range(report_type)
         else:
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
@@ -125,6 +238,14 @@ def get_financial_report():
                 daily_data = _get_daily_financial_data(current_date)
                 financial_data.append(daily_data)
                 current_date += timedelta(days=1)
+        elif report_type == 'weekly':
+            # 按周统计（周一到周日）
+            current_date = start_date
+            while current_date <= end_date:
+                week_end = min(current_date + timedelta(days=(6 - current_date.weekday())), end_date)
+                weekly_data = _get_weekly_financial_data(current_date, week_end)
+                financial_data.append(weekly_data)
+                current_date = week_end + timedelta(days=1)
         elif report_type == 'monthly':
             # 按月统计
             current_date = start_date.replace(day=1)
@@ -136,6 +257,27 @@ def get_financial_report():
                     current_date = current_date.replace(year=current_date.year + 1, month=1)
                 else:
                     current_date = current_date.replace(month=current_date.month + 1)
+        elif report_type == 'quarterly':
+            # 按季度统计
+            cursor = start_date
+            while cursor <= end_date:
+                quarter_start = _get_quarter_start_date(cursor)
+                quarter_end = _get_quarter_end_date(cursor)
+                period_start = max(quarter_start, start_date)
+                period_end = min(quarter_end, end_date)
+                quarter_index = ((quarter_start.month - 1) // 3) + 1
+                financial_data.append(_get_quarterly_financial_data(quarter_start.year, quarter_index, period_start, period_end))
+                cursor = quarter_end + timedelta(days=1)
+        elif report_type == 'yearly':
+            # 按年统计
+            year = start_date.year
+            while year <= end_date.year:
+                year_start = datetime(year, 1, 1).date()
+                year_end = datetime(year, 12, 31).date()
+                period_start = max(year_start, start_date)
+                period_end = min(year_end, end_date)
+                financial_data.append(_get_yearly_financial_data(year, period_start, period_end))
+                year += 1
         
         # 计算汇总数据
         total_income = float(sum(item['income'] for item in financial_data))
@@ -169,60 +311,13 @@ def get_financial_report():
 
 def _get_daily_financial_data(date):
     """获取指定日期的财务数据"""
-    # 计算当日收入（统一换算为人民币）
-    daily_orders = db.session.query(Order).filter(
-        func.date(Order.created_at) == date
-    ).all()
-    
-    daily_income = 0.0
-    for order in daily_orders:
-        # 只统计已支付且有实际到账金额的订单
-        if (order.financial_status in ['paid', 'partially_paid'] and 
-            order.actual_received and order.currency):
-            if order.currency == 'CNY':
-                daily_income += float(order.actual_received)
-            else:
-                daily_income += float(exchange_rate_service.convert_to_cny(
-                    float(order.actual_received), order.currency
-                ))
-    
-    # 计算当日费用（统一换算为人民币）
-    daily_expenses = db.session.query(Expense).filter(
-        func.date(Expense.expense_date) == date
-    ).all()
-    
-    daily_expense = 0.0
-    for expense in daily_expenses:
-        if expense.amount and expense.currency:
-            if expense.currency == 'CNY':
-                daily_expense += float(expense.amount)
-            else:
-                daily_expense += float(exchange_rate_service.convert_to_cny(
-                    float(expense.amount), expense.currency
-                ))
-    
-    # 计算当日订单成本
-    daily_order_costs = db.session.query(OrderCost).join(Order).filter(
-        func.date(Order.created_at) == date
-    ).all()
-    
-    for cost in daily_order_costs:
-        if cost.amount and cost.currency:
-            if cost.currency == 'CNY':
-                daily_expense += float(cost.amount)
-            else:
-                daily_expense += float(exchange_rate_service.convert_to_cny(
-                    float(cost.amount), cost.currency
-                ))
-    
-    daily_profit = float(daily_income) - float(daily_expense)
-    
-    return {
-        'date': date.isoformat(),
-        'income': round(daily_income, 2),
-        'expense': round(daily_expense, 2),
-        'profit': round(daily_profit, 2)
-    }
+    return _get_period_financial_data(date, date, date.isoformat())
+
+
+def _get_weekly_financial_data(start_date, end_date):
+    """获取指定周区间的财务数据"""
+    label = f'{start_date.isoformat()} ~ {end_date.isoformat()}'
+    return _get_period_financial_data(start_date, end_date, label)
 
 def _get_monthly_financial_data(year, month):
     """获取指定月份的财务数据"""
@@ -232,61 +327,17 @@ def _get_monthly_financial_data(year, month):
         end_date = datetime(year + 1, 1, 1).date() - timedelta(days=1)
     else:
         end_date = datetime(year, month + 1, 1).date() - timedelta(days=1)
-    
-    # 计算月收入（统一换算为人民币）
-    monthly_orders = db.session.query(Order).filter(
-        and_(Order.created_at >= start_date, Order.created_at <= end_date)
-    ).all()
-    
-    monthly_income = 0.0
-    for order in monthly_orders:
-        # 只统计已支付且有实际到账金额的订单
-        if (order.financial_status in ['paid', 'partially_paid'] and 
-            order.actual_received and order.currency):
-            if order.currency == 'CNY':
-                monthly_income += float(order.actual_received)
-            else:
-                monthly_income += float(exchange_rate_service.convert_to_cny(
-                    float(order.actual_received), order.currency
-                ))
-    
-    # 计算月费用（统一换算为人民币）
-    monthly_expenses = db.session.query(Expense).filter(
-        and_(Expense.expense_date >= start_date, Expense.expense_date <= end_date)
-    ).all()
-    
-    monthly_expense = 0.0
-    for expense in monthly_expenses:
-        if expense.amount and expense.currency:
-            if expense.currency == 'CNY':
-                monthly_expense += float(expense.amount)
-            else:
-                monthly_expense += float(exchange_rate_service.convert_to_cny(
-                    float(expense.amount), expense.currency
-                ))
-    
-    # 计算月订单成本
-    monthly_order_costs = db.session.query(OrderCost).join(Order).filter(
-        and_(Order.created_at >= start_date, Order.created_at <= end_date)
-    ).all()
-    
-    for cost in monthly_order_costs:
-        if cost.amount and cost.currency:
-            if cost.currency == 'CNY':
-                monthly_expense += float(cost.amount)
-            else:
-                monthly_expense += float(exchange_rate_service.convert_to_cny(
-                    float(cost.amount), cost.currency
-                ))
-    
-    monthly_profit = float(monthly_income) - float(monthly_expense)
-    
-    return {
-        'date': f'{year}-{month:02d}',
-        'income': round(monthly_income, 2),
-        'expense': round(monthly_expense, 2),
-        'profit': round(monthly_profit, 2)
-    }
+    return _get_period_financial_data(start_date, end_date, f'{year}-{month:02d}')
+
+
+def _get_quarterly_financial_data(year, quarter, start_date, end_date):
+    """获取指定季度区间的财务数据"""
+    return _get_period_financial_data(start_date, end_date, f'{year}-Q{quarter}')
+
+
+def _get_yearly_financial_data(year, start_date, end_date):
+    """获取指定年份区间的财务数据"""
+    return _get_period_financial_data(start_date, end_date, str(year))
 
 @bp.route('/reports/revenue-trend', methods=['GET'])
 def get_revenue_trend():
@@ -301,13 +352,15 @@ def get_revenue_trend():
         else:
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+        order_start_dt, order_end_dt_exclusive = _build_order_datetime_range(start_date, end_date)
         
         # 按日期分组统计收入（统一换算为人民币）
         revenue_data = db.session.query(
             func.date(Order.created_at).label('date'),
             func.count(Order.id).label('order_count')
         ).filter(
-            and_(Order.created_at >= start_date, Order.created_at <= end_date)
+            and_(Order.created_at >= order_start_dt, Order.created_at < order_end_dt_exclusive)
         ).group_by(func.date(Order.created_at)).order_by('date').all()
         
         trend_data = []

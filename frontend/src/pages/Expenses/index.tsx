@@ -261,9 +261,15 @@ const Expenses: React.FC = () => {
             title="编辑"
             onClick={() => {
               setCurrentRecord(record);
+              // 处理关联订单ID
+              const orderIds = record.orders_info ? record.orders_info.map((order: any) => order.id) : 
+                              (record.order_info ? [record.order_info.id] : []);
+              
               editForm.setFieldsValue({
                 ...record,
-                date: record.date ? new Date(record.date) : null,
+                date: record.date ? dayjs(record.date) : null,
+                order_ids: orderIds,
+                account_id: record.account_id || undefined,
               });
               setEditModalVisible(true);
             }}
@@ -696,6 +702,41 @@ const Expenses: React.FC = () => {
             rules={[{ required: true, message: '请输入提交人' }]}
           >
             <Input placeholder="请输入提交人" />
+          </Form.Item>
+          <Form.Item
+            name="order_ids"
+            label="关联订单"
+            tooltip="可以选择多个订单关联到此费用"
+          >
+            <Select
+              mode="multiple"
+              placeholder="请选择关联订单（可选）"
+              showSearch
+              filterOption={(input, option) =>
+                (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+              options={orders.map(order => ({
+                value: order.id,
+                label: `${order.order_number} - ${order.customer_name || order.customer_email} - ¥${order.total_price}`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="account_id"
+            label="扣费账户"
+            tooltip="选择要从哪个账户扣除此费用"
+          >
+            <Select
+              placeholder="请选择扣费账户（可选）"
+              showSearch
+              filterOption={(input, option) =>
+                (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+              options={(accounts || []).filter(account => account.status === 'active').map(account => ({
+                value: account.id,
+                label: `${account.account_name} (${account.platform}) - 余额: ¥${account.balance}`,
+              }))}
+            />
           </Form.Item>
           <Form.Item
             name="status"

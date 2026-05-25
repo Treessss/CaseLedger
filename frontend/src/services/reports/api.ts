@@ -10,7 +10,7 @@ export interface FinancialData {
 export interface ReportParams {
   start_date?: string;
   end_date?: string;
-  report_type?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  report_type?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
   category?: string;
 }
 

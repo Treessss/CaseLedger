@@ -22,6 +22,7 @@ class ShopifyService:
         self.api_secret = None
         self.shop_url = None
         self.access_token = None
+        self.api_timeout = 30
         
         if app is not None:
             self.init_app(app)
@@ -33,6 +34,7 @@ class ShopifyService:
         self.api_secret = app.config.get('SHOPIFY_API_SECRET')
         self.shop_url = app.config.get('SHOPIFY_SHOP_URL')
         self.access_token = app.config.get('SHOPIFY_ACCESS_TOKEN')
+        self.api_timeout = int(app.config.get('SHOPIFY_API_TIMEOUT', 30) or 30)
         
         if not all([self.api_key, self.api_secret, self.shop_url, self.access_token]):
             app.logger.warning("Shopify configuration incomplete")
@@ -56,8 +58,12 @@ class ShopifyService:
             # 使用正确的Shopify API认证方式 - 只使用访问令牌
             shopify.ShopifyResource.set_site(f"https://{formatted_shop_url}/admin/api/2023-10")
             shopify.ShopifyResource.activate_session(shopify.Session(formatted_shop_url, '2023-10', self.access_token))
+            shopify.ShopifyResource.set_timeout(self.api_timeout)
             if self.app:
-                self.app.logger.info(f"Shopify API session initialized successfully for {formatted_shop_url}")
+                self.app.logger.info(
+                    f"Shopify API session initialized successfully for {formatted_shop_url} "
+                    f"(timeout={self.api_timeout}s)"
+                )
         except Exception as e:
             if self.app:
                 self.app.logger.error(f"Failed to initialize Shopify session: {str(e)}")
@@ -135,6 +141,8 @@ class ShopifyService:
                 for shopify_order in batch:
                     retry_count = 0
                     max_retries = 5  # 增加重试次数
+                    if self.app:
+                        self.app.logger.debug(f"Processing order {shopify_order.id}")
                     
                     while retry_count < max_retries:
                         try:
@@ -156,7 +164,7 @@ class ShopifyService:
                             break
                             
                         except OperationalError as e:
-                            if "database is locked" in str(e) and retry_count < max_retries - 1:
+                            if "database is locked" in str(e).lower() and retry_count < max_retries - 1:
                                 retry_count += 1
                                 if self.app:
                                     self.app.logger.warning(f"Database locked, retrying order {shopify_order.id} (attempt {retry_count})")
@@ -185,7 +193,7 @@ class ShopifyService:
                             self.app.logger.info(f"第 {current_batch} 批订单处理完成")
                         break
                     except OperationalError as e:
-                        if "database is locked" in str(e) and commit_retry_count < max_commit_retries - 1:
+                        if "database is locked" in str(e).lower() and commit_retry_count < max_commit_retries - 1:
                             commit_retry_count += 1
                             time.sleep(0.5 * commit_retry_count)  # 递增延迟
                             db.session.rollback()
@@ -223,8 +231,8 @@ class ShopifyService:
             # 更新订单基本信息
             from decimal import Decimal
             order.order_number = shopify_order.order_number
-            order.customer_email = shopify_order.email
-            order.customer_name = f"{shopify_order.billing_address.first_name if shopify_order.billing_address else ''} {shopify_order.billing_address.last_name if shopify_order.billing_address else ''}".strip()
+            order.customer_email = "xxxxxxx"
+            order.customer_name = "xxxx"           
             order.total_price = Decimal(str(shopify_order.total_price))
             order.subtotal_price = Decimal(str(shopify_order.subtotal_price)) if hasattr(shopify_order, 'subtotal_price') and shopify_order.subtotal_price else Decimal(str(shopify_order.total_price))
             order.total_tax = Decimal(str(shopify_order.total_tax)) if hasattr(shopify_order, 'total_tax') and shopify_order.total_tax else Decimal('0')
@@ -258,21 +266,20 @@ class ShopifyService:
             
             if not existing_order:
                 db.session.add(order)
-        
-        # 手动flush订单以获取order.id，但不提交事务
-        db.session.flush()
+                # 新订单需要先flush以获取order.id供payment关联
+                db.session.flush()
         
         # 处理支付信息
-        transactions = shopify_order.transactions
+        transactions = getattr(shopify_order, 'transactions', [])
+        if hasattr(transactions, '__call__'):
+            transactions = transactions()
+        elif not hasattr(transactions, '__iter__'):
+            transactions = []
+
         if self.app:
-            self.app.logger.info(f"订单 {order.order_number} 的交易数据: {transactions}")
-        
+            self.app.logger.debug(f"订单 {order.order_number} 交易对象类型: {type(transactions).__name__}")
+
         if transactions:
-            # 确保transactions是可迭代的
-            if hasattr(transactions, '__call__'):
-                transactions = transactions()
-            elif not hasattr(transactions, '__iter__'):
-                transactions = []
             
             if self.app:
                 self.app.logger.info(f"订单 {order.order_number} 有 {len(transactions)} 个交易")
@@ -387,6 +394,8 @@ class ShopifyService:
                     payment.payment_method = 'stripe'
                 elif 'paypal' in gateway.lower():
                     payment.payment_method = 'paypal'
+                elif 'shopify' in gateway.lower():
+                    payment.payment_method = 'shopify_payment'
                 else:
                     payment.payment_method = gateway
                 
@@ -395,6 +404,13 @@ class ShopifyService:
                 payment.status = transaction.status
                 payment.payment_date = datetime.fromisoformat(transaction.processed_at.replace('Z', '+00:00')) if transaction.processed_at else datetime.utcnow()
                 
+                # 如果是已存在且已完成计算的支付，避免重算以保护历史数据
+                try:
+                    if existing_payment and existing_payment.total_fee and float(existing_payment.total_fee) > 0 and existing_payment.status in ['success', 'completed']:
+                        return existing_payment
+                except Exception:
+                    pass
+
                 # 根据支付方式从FeeConfig获取费用配置
                 fee_config = None
                 if payment.payment_method == 'paypal':
@@ -407,6 +423,12 @@ class ShopifyService:
                     fee_config = FeeConfig.query.filter_by(
                         fee_type='payment',
                         fee_name='Stripe手续费',
+                        is_active=True
+                    ).first()
+                elif payment.payment_method == 'shopify_payment':
+                    fee_config = FeeConfig.query.filter_by(
+                        fee_type='payment',
+                        fee_name='Shopify支付手续费',
                         is_active=True
                     ).first()
                 
@@ -566,29 +588,87 @@ class ShopifyService:
                 if self.app:
                     self.app.logger.info("没有找到需要同步的最近订单")
                 return stats
-            
-            # 处理订单
-            for shopify_order in orders:
-                try:
-                    # 检查是否为新订单
-                    existing_order = Order.query.filter_by(shopify_order_id=shopify_order.id).first()
-                    is_new_order = existing_order is None
-                    
-                    self._process_order(shopify_order)
-                    
-                    if is_new_order:
-                        stats['new_orders'] += 1
-                    else:
-                        stats['updated_orders'] += 1
-                        
-                except Exception as e:
-                    if self.app:
-                        self.app.logger.error(f"Error processing recent order {shopify_order.id}: {str(e)}")
-                    stats['errors'] += 1
-                    db.session.rollback()
-            
-            # 提交所有更改
-            db.session.commit()
+
+            # 分批处理并分批提交，降低SQLite锁冲突
+            batch_size = 5
+            total_batches = (len(orders) + batch_size - 1) // batch_size
+
+            if self.app:
+                self.app.logger.info(f"开始分批处理最近订单：共 {total_batches} 批，每批 {batch_size} 个")
+
+            for i in range(0, len(orders), batch_size):
+                batch = orders[i:i + batch_size]
+                current_batch = (i // batch_size) + 1
+
+                if self.app:
+                    self.app.logger.info(f"处理最近订单第 {current_batch}/{total_batches} 批 ({len(batch)} 个订单)")
+
+                if i > 0:
+                    time.sleep(0.1)
+
+                for shopify_order in batch:
+                    retry_count = 0
+                    max_retries = 5
+
+                    while retry_count < max_retries:
+                        try:
+                            if retry_count > 0:
+                                db.session.rollback()
+                                time.sleep(0.5 * retry_count)
+
+                            existing_order = Order.query.filter_by(shopify_order_id=shopify_order.id).first()
+                            is_new_order = existing_order is None
+                            self._process_order(shopify_order)
+
+                            if is_new_order:
+                                stats['new_orders'] += 1
+                            else:
+                                stats['updated_orders'] += 1
+                            break
+                        except OperationalError as e:
+                            if "database is locked" in str(e).lower() and retry_count < max_retries - 1:
+                                retry_count += 1
+                                if self.app:
+                                    self.app.logger.warning(
+                                        f"Database locked, retrying recent order {shopify_order.id} (attempt {retry_count})"
+                                    )
+                                continue
+
+                            if self.app:
+                                self.app.logger.error(f"Error processing recent order {shopify_order.id}: {str(e)}")
+                            stats['errors'] += 1
+                            db.session.rollback()
+                            break
+                        except Exception as e:
+                            if self.app:
+                                self.app.logger.error(f"Error processing recent order {shopify_order.id}: {str(e)}")
+                            stats['errors'] += 1
+                            db.session.rollback()
+                            break
+
+                commit_retry_count = 0
+                max_commit_retries = 3
+
+                while commit_retry_count < max_commit_retries:
+                    try:
+                        db.session.commit()
+                        break
+                    except OperationalError as e:
+                        if "database is locked" in str(e).lower() and commit_retry_count < max_commit_retries - 1:
+                            commit_retry_count += 1
+                            time.sleep(0.5 * commit_retry_count)
+                            db.session.rollback()
+                            if self.app:
+                                self.app.logger.warning(
+                                    f"Database locked during recent batch commit (attempt {commit_retry_count})"
+                                )
+                        else:
+                            db.session.rollback()
+                            if self.app:
+                                self.app.logger.error(
+                                    f"Failed to commit recent batch after {max_commit_retries} attempts: {str(e)}"
+                                )
+                            break
             
             if self.app:
                 self.app.logger.info(f"Recent orders sync completed: {stats}")

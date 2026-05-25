@@ -16,7 +16,18 @@ class Config:
         # 开发环境使用SQLite
         basedir = os.path.abspath(os.path.dirname(__file__))
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(basedir, 'case_ledger.db')}"
+    
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    
+    # SQLite优化配置，防止数据库锁定
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+        'connect_args': {
+            'check_same_thread': False,
+            'timeout': 30
+        }
+    }
     
     # Shopify API配置
     SHOPIFY_API_KEY = os.environ.get('SHOPIFY_API_KEY')
@@ -24,6 +35,7 @@ class Config:
     SHOPIFY_ACCESS_TOKEN = os.environ.get('SHOPIFY_ACCESS_TOKEN')
     SHOPIFY_SHOP_URL = os.environ.get('SHOPIFY_SHOP_URL')
     SHOPIFY_WEBHOOK_SECRET = os.environ.get('SHOPIFY_WEBHOOK_SECRET')
+    SHOPIFY_API_TIMEOUT = int(os.environ.get('SHOPIFY_API_TIMEOUT') or 30)
     
     # PayPal API配置
     PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID')
