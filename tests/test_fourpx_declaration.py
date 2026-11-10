@@ -823,3 +823,24 @@ def test_canada_smart_rejected_postcode_falls_back_to_light_and_caches(app, shop
         checked = fourpx_declaration_service._build_row(order)
         assert checked["product"]["code"] == "S5058"
         assert "智选不可达" in checked["product_reason"]
+
+
+def test_recipient_street_merges_shopify_address_lines(app):
+    from types import SimpleNamespace
+    from app.services.fourpx_declaration_service import _recipient
+
+    order = SimpleNamespace(
+        shipping_address={"name": "Test User", "phone": "123", "email": "t@example.com",
+                          "post_code": "99163", "country_code": "US", "province": "WA",
+                          "city": "Pullman", "address1": "1535 NORTHEAST MERMAN DRIVE AP",
+                          "address2": "Apt E4"},
+        customer_name="Test User", customer_phone="", customer_email="",
+    )
+    recipient = _recipient(order)
+    assert recipient["street"] == "1535 NORTHEAST MERMAN DRIVE AP, Apt E4"
+
+    duplicate = SimpleNamespace(
+        shipping_address={"name": "T", "address1": "79 Andrew Crescent", "address2": "79 Andrew Crescent"},
+        customer_name="T", customer_phone="", customer_email="",
+    )
+    assert _recipient(duplicate)["street"] == "79 Andrew Crescent"

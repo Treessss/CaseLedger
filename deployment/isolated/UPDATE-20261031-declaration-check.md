@@ -1631,3 +1631,17 @@ ERANOIR 待补记队列：176 单成功补出库、1 单跳过、0 单失败，*
 - 费用管理每日自动账单 `4PX自动-日期` 现在同时包含订单运费和 CF 售后运费（CF 按售后出库日期归集）；
 - 首次回填：CASEEASE 11-01 起 54 张 CF，成功 52 张，合计 ¥1,555.07；2 张（CF13315、CF14889）4PX 尚未出账，自动重试；
 - 后端镜像 `caseledger-copy-app:local`（`875d8f296718`），web/worker/beat 已重启。
+
+---
+
+# 2026-11-11 修复：4PX 预申报只填第一行地址（丢失 address2）
+
+- 原因：`_recipient` 的 `street` 只取 Shopify `address1`；`address2` 虽读到，但提交前被 `RECIPIENT_FIELDS` 过滤掉；
+  地址校验却用 `address1 + address2`，所以两行地址能通过检查但实际面单缺第二行。
+- 修复：新增 `_street_line()`，把 `address1` 和 `address2` 合并进 4PX 的 `street` 字段；
+  - 第二行与第一行重复时不重复拼接；
+  - 第一行只有门牌、第二行是街道时也能组成完整地址。
+- 影响范围：仅影响之后新建的预申报；历史 260 单按需求**不处理**。
+- 验证：18047 `street=1535 NORTHEAST MERMAN DRIVE AP, Apt E4`；17471 `street=90, Puffin Road`；
+- 新增回归测试 `test_recipient_street_merges_shopify_address_lines`；
+- 后端镜像 `caseledger-copy-app:local`（`a78b60f76183`），web/worker 已重启。

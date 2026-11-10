@@ -280,6 +280,22 @@ def declared_total(declare_rows):
     return float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def _street_line(address):
+    """Shopify 地址常拆成 address1/address2 两行，4PX 只有一个 street 字段。
+
+    两行都要拼进 street（第二行常是单元/楼层/补充街道），否则面单会缺门牌或单元。
+    第二行与第一行重复时不再重复拼接。
+    """
+    first = str(address.get("address1") or "").strip()
+    second = str(address.get("address2") or "").strip()
+    parts = []
+    if first:
+        parts.append(first)
+    if second and second.casefold() not in first.casefold():
+        parts.append(second)
+    return ", ".join(parts)
+
+
 def _recipient(order):
     address = dict(order.shipping_address or {})
     name = str(address.get("name") or order.customer_name or "").strip()
@@ -297,7 +313,7 @@ def _recipient(order):
         "state": str(address.get("province") or address.get("province_code") or "").strip(),
         "city": str(address.get("city") or "").strip(),
         "district": "",
-        "street": str(address.get("address1") or "").strip(),
+        "street": _street_line(address),
         "house_number": "",
         "address2": str(address.get("address2") or "").strip(),
     }
