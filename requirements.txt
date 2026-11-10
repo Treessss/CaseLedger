@@ -3,15 +3,27 @@ Flask-SQLAlchemy==3.0.5
 Flask-Migrate==4.0.5
 Flask-CORS==4.0.0
 PyMySQL==1.1.0
+psycopg2-binary==2.9.9
 requests==2.31.0
 celery==5.3.1
+kombu==5.3.7
 redis==4.6.0
 python-dotenv==1.0.0
 Werkzeug==2.3.7
-shopify-python-api==1.0.1
-stripe==5.5.0
-paypalrestsdk==1.13.1
-pandas==2.0.3
-openpyxl==3.1.2
-APScheduler==3.10.4
+# 注意: 提供 `import shopify` 模块的是 ShopifyAPI（官方库）。
+# 不要写成 shopify-python-api —— 那个包提供的是 shopify_api，会导致后端无法启动。
+ShopifyAPI==12.7.0
 PyJWT==2.8.0
+gunicorn==21.2.0
+# 平台账号密码加密（Fernet）直接依赖；此前是从 paypalrestsdk 传递进来的，
+# 一旦该包被移除就会导致 app/models/platform_account.py 导入失败，必须显式声明。
+cryptography==43.0.3
+# 采购清单 PDF 导出（含商品缩略图与中文排版）。
+reportlab==4.4.9
+# 合并 4PX 原始面单 PDF，不重绘条码或改变纸张尺寸。
+pypdf==6.10.0
+XlsxWriter==3.2.9
+
+# 说明：stripe / paypalrestsdk / pandas / openpyxl / APScheduler 已在 2026-09 移除，
+# 因为全项目没有任何代码引用它们（其中 pandas 还会拖慢并拖垮 CI 安装）。
+# 如后续要做导出 Excel / 对接支付 SDK，再按需加回。

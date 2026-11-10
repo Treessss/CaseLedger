@@ -1,0 +1,81 @@
+name: caseledger-copy
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: deployment/isolated/Dockerfile
+  image: caseledger-copy-app:local
+  env_file:
+    - /opt/caseledger-copy/config/app.env
+  environment:
+    PYTHONPATH: /app
+    DATABASE_URL: postgresql://caseledger:${CASELEDGER_DB_PASSWORD}@db:5432/caseledger
+    REDIS_URL: redis://redis:6379/0
+    FLASK_DEBUG: "False"
+    EXPOSE_ERROR_DETAILS: "False"
+    CORS_ORIGINS: https://192.3.236.57:8443
+  volumes:
+    - /opt/caseledger-copy/data/instance:/app/instance
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: caseledger
+      POSTGRES_USER: caseledger
+      POSTGRES_PASSWORD: ${CASELEDGER_DB_PASSWORD}
+    volumes:
+      - /opt/caseledger-copy/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caseledger -d caseledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - /opt/caseledger-copy/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:5082:5000"
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "worker", "--loglevel=info", "--concurrency=1", "-Q", "celery,sync,sync_full,test"]
+
+  declaration-worker:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "declaration", "-n", "declaration@%h"]
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "beat", "--loglevel=info", "--schedule=/app/instance/celerybeat-schedule"]
+
+  mail-worker:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "mail", "-n", "mail@%h"]
+
+  tracking-worker:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "tracking", "-n", "tracking@%h"]
+
+  tracking-history-worker:
+    <<: *app
+    command: ["celery", "-A", "celery_app.celery", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "tracking_history", "-n", "tracking-history@%h"]

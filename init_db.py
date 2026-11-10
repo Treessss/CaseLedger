@@ -1,57 +1,59 @@
 #!/usr/bin/env python3
-"""数据库初始化脚本"""
+"""Initialize default data (fee configs) and, if needed, create tables.
+
+Schema changes are managed by Alembic. Recommended order:
+    flask db upgrade     # create / upgrade tables
+    python init_db.py    # seed default data (idempotent)
+
+For a brand new database without Alembic this script still falls back to
+db.create_all() so local development keeps working.
+"""
 
 import os
 import sys
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate, init, migrate, upgrade
-from dotenv import load_dotenv
 
-# 加载环境变量
+from dotenv import load_dotenv
+from sqlalchemy import inspect
+
 load_dotenv()
 
-# 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app import create_app, db
-from app.models import Order, Payment, Expense, FeeConfig, Product, Account, Recharge, Consumption, OrderCost, OrderCostBatch, ShopifyConfig
+from app import create_app, db  # noqa: E402
+from app.models import FeeConfig  # noqa: E402
+
+
+def _is_alembic_managed():
+    """True when the database already has an alembic_version table."""
+    return "alembic_version" in inspect(db.engine).get_table_names()
+
 
 def init_database():
-    """初始化数据库"""
     app = create_app()
-    
+
     with app.app_context():
-        print("正在创建数据库表...")
-        
-        # 创建所有表
-        db.create_all()
-        
-        # 初始化默认手续费配置
+        print(f"数据库: {db.engine.url.render_as_string(hide_password=True)}")
+
+        if _is_alembic_managed():
+            print("检测到 Alembic 管理的数据库，跳过建表。")
+            print("如需升级表结构，请执行: flask db upgrade")
+        else:
+            print("未检测到迁移版本表，使用 db.create_all() 创建表结构...")
+            db.create_all()
+            print("提示: 正式环境请改用 `flask db upgrade` 管理表结构。")
+
         print("正在初始化默认手续费配置...")
         FeeConfig.init_default_configs()
-        
-        print("数据库初始化完成！")
-        
-        # 显示创建的表
-        print("\n已创建的表:")
-        print("- orders (订单表)")
-        print("- payments (支付记录表)")
-        print("- expenses (费用支出表)")
-        print("- fee_configs (手续费配置表)")
-        print("- products (商品表)")
-        print("- accounts (账户表)")
-        print("- recharges (充值记录表)")
-        print("- consumptions (消耗记录表)")
-        print("- order_costs (订单费用表)")
-        print("- order_cost_batches (订单费用批次表)")
-        print("- shopify_configs (Shopify配置表)")
-        
-        # 显示默认配置
-        configs = FeeConfig.query.all()
-        print("\n默认手续费配置:")
-        for config in configs:
-            print(f"- {config.fee_type}: {config.fee_name} (固定费用: ${config.fixed_amount}, 百分比: {config.percentage_rate}%)")
+        print("初始化完成。")
 
-if __name__ == '__main__':
+        configs = FeeConfig.query.all()
+        print(f"\n当前手续费配置 {len(configs)} 条:")
+        for config in configs:
+            print(
+                f"- {config.fee_type}: {config.fee_name} "
+                f"(固定 ${config.fixed_amount}, 百分比 {config.percentage_rate}%)"
+            )
+
+
+if __name__ == "__main__":
     init_database()

@@ -3,6 +3,22 @@
 # CaseLedger 内网穿透启动脚本
 # 为前端和后端服务创建公网访问隧道
 
+# 安全闸门：内网穿透会把本机的订单、客户、财务数据直接发布到公网固定域名，
+# 而本地服务默认不带任何访问控制，因此默认禁止执行，必须显式确认。
+if [ "${ALLOW_PUBLIC_TUNNEL:-no}" != "yes" ]; then
+    cat <<'EOT'
+⚠️  已阻止执行：内网穿透会将服务直接暴露到公网。
+
+执行前请确认：
+  1) 后端 FLASK_DEBUG 必须为 False（调试模式会暴露可执行代码的调试器）；
+  2) 只使用临时测试数据，不要使用真实的订单/客户/财务数据；
+  3) 演示结束后立即停止隧道（Ctrl+C 或 kill 对应进程）。
+
+确认无误后执行：  ALLOW_PUBLIC_TUNNEL=yes ./start_tunnel.sh
+EOT
+    exit 1
+fi
+
 echo "=== CaseLedger 内网穿透服务 ==="
 echo
 

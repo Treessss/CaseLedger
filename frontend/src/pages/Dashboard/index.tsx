@@ -1,13 +1,22 @@
+import {
+  CreditCardOutlined,
+  LineChartOutlined,
+  ShoppingCartOutlined,
+  WalletOutlined,
+} from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
-import { Card, Col, Row, Statistic, Table, Typography, Spin, DatePicker } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { Card, Col, DatePicker, Row, Spin, Statistic, Table } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import React, { useEffect, useState } from 'react';
-
-import { getDashboardStats, getRecentOrders } from '@/services/dashboard';
-import { OrderItem } from '@/services/orders';
-import dayjs, { Dayjs } from 'dayjs';
-
-const { Title } = Typography;
+import {
+  getDashboardStats,
+  getRecentOrders,
+  getWorkload,
+  type WorkloadSummary,
+} from '@/services/dashboard';
+import { history, useModel } from '@umijs/max';
+import type { OrderItem } from '@/services/orders';
+import { getCurrentBeijingTime } from '@/utils/timezone';
 
 interface DashboardStats {
   order_count: number;
@@ -17,12 +26,38 @@ interface DashboardStats {
   profit_margin: number;
 }
 
+const kpiHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  marginBottom: 6,
+};
+
+const kpiTitleStyle: React.CSSProperties = {
+  color: '#64748B',
+  fontSize: 13,
+  fontWeight: 500,
+};
+
 const Dashboard: React.FC = () => {
+  // 仪表板按账号实际拿到的权限拼装：能看到什么就只请求什么，
+  // 避免只有「仪表板 + 订单」的账号去调财务报表接口拿 403。
+  const { initialState } = useModel('@@initialState');
+  const currentUser = initialState?.currentUser;
+  const isAdmin = currentUser?.access === 'admin';
+  const granted = new Set(currentUser?.permissions ?? []);
+  const can = (key: string) => Boolean(isAdmin || granted.has(key));
+  const canSeeWorkload = can('orders');
+  const canSeeFinance = can('reports');
+
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recentOrders, setRecentOrders] = useState<OrderItem[]>([]);
+  const [workload, setWorkload] = useState<WorkloadSummary | null>(null);
 
-  const [selectedMonth, setSelectedMonth] = useState<Dayjs>(dayjs());
+  const [selectedMonth, setSelectedMonth] = useState<Dayjs>(
+    dayjs(getCurrentBeijingTime('YYYY-MM-DD')),
+  );
 
   useEffect(() => {
     fetchDashboardData();
@@ -34,20 +69,28 @@ const Dashboard: React.FC = () => {
       // 计算选择月份的开始和结束日期
       const startDate = selectedMonth.startOf('month').format('YYYY-MM-DD');
       const endDate = selectedMonth.endOf('month').format('YYYY-MM-DD');
-      
-      const [statsRes, ordersRes] = await Promise.all([
-        getDashboardStats(startDate, endDate),
-        getRecentOrders()
+
+      const [statsRes, ordersRes, workloadRes] = await Promise.all([
+        canSeeFinance
+          ? getDashboardStats(startDate, endDate)
+          : Promise.resolve({ success: false } as const),
+        getRecentOrders(),
+        canSeeWorkload
+          ? getWorkload()
+          : Promise.resolve({ success: false } as const),
       ]);
-      
+
       if (statsRes.success) {
         setStats(statsRes.data);
       }
-      
+
       if (ordersRes.success) {
         setRecentOrders(ordersRes.data || []);
       }
 
+      if (workloadRes.success) {
+        setWorkload(workloadRes.data);
+      }
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
     } finally {
@@ -73,69 +116,168 @@ const Dashboard: React.FC = () => {
   return (
     <PageContainer
       title="仪表板"
-      subTitle="CaseLedger 数据概览"
-      extra={[
-        <DatePicker
-          key="month-picker"
-          picker="month"
-          value={selectedMonth}
-          onChange={handleMonthChange}
-          format="YYYY年MM月"
-          placeholder="选择月份"
-        />
-      ]}
+      subTitle={
+        canSeeFinance ? 'CaseLedger 数据概览' : '你的账号主要看作业进度'
+      }
+      extra={
+        // 月份选择只影响财务统计，没报表权限就不显示
+        canSeeFinance
+          ? [
+              <DatePicker
+                key="month-picker"
+                picker="month"
+                value={selectedMonth}
+                onChange={handleMonthChange}
+                format="YYYY年MM月"
+                placeholder="选择月份"
+              />,
+            ]
+          : undefined
+      }
     >
+      {/* 今日作业：先告诉现场今天还剩多少活，点数字直达对应页面 */}
+      {canSeeWorkload && (
+      <Card
+        size="small"
+        title="今日作业"
+        style={{ marginBottom: 16 }}
+        extra={<span style={kpiTitleStyle}>点数字直接进入对应页面</span>}
+      >
+        <Row gutter={[16, 12]}>
+          {[
+            { key: 'pending_ship', label: '待发货', to: '/shipping', color: '#F59E0B' },
+            { key: 'ready_to_ship', label: '可出库', to: '/shipping', color: '#16A34A' },
+            { key: 'awaiting_purchase', label: '待采购', to: '/purchases', color: '#DC2626' },
+            { key: 'shipped_today', label: '今日已出库', to: '/shipping', color: '#1E40AF' },
+          ].map((item) => (
+            <Col xs={12} md={6} key={item.key}>
+              <button
+                type="button"
+                onClick={() => history.push(item.to)}
+                style={{
+                  cursor: 'pointer',
+                  padding: '2px 0',
+                  border: 'none',
+                  background: 'transparent',
+                  textAlign: 'left',
+                  width: '100%',
+                }}
+              >
+                <Statistic
+                  title={item.label}
+                  value={workload?.[item.key as keyof WorkloadSummary] ?? 0}
+                  valueStyle={{ color: item.color, fontSize: 26 }}
+                  suffix={<span style={{ fontSize: 13, color: '#94a3b8' }}>件</span>}
+                />
+              </button>
+            </Col>
+          ))}
+        </Row>
+      </Card>
+      )}
+
+      {canSeeFinance && (
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} md={6}>
-          <Card>
+          <Card
+            styles={{ body: { padding: '18px 20px' } }}
+            style={{ borderLeft: '3px solid #1E40AF' }}
+          >
+            <div style={kpiHeaderStyle}>
+              <span style={kpiTitleStyle}>总订单数</span>
+              <ShoppingCartOutlined
+                style={{ color: '#1E40AF', fontSize: 18 }}
+              />
+            </div>
             <Statistic
-              title="总订单数"
               value={stats?.order_count || 0}
               precision={0}
-              valueStyle={{ color: '#3f8600' }}
-              prefix={<ArrowUpOutlined />}
-              suffix="个"
+              suffix="单"
+              valueStyle={{
+                fontSize: 28,
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+              }}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card>
+          <Card
+            styles={{ body: { padding: '18px 20px' } }}
+            style={{ borderLeft: '3px solid #16A34A' }}
+          >
+            <div style={kpiHeaderStyle}>
+              <span style={kpiTitleStyle}>总收入</span>
+              <WalletOutlined style={{ color: '#16A34A', fontSize: 18 }} />
+            </div>
             <Statistic
-              title="总收入"
               value={stats?.total_revenue || 0}
               precision={2}
-              valueStyle={{ color: '#3f8600' }}
-              prefix={<ArrowUpOutlined />}
-              suffix="元"
+              prefix="¥"
+              valueStyle={{
+                fontSize: 28,
+                fontWeight: 600,
+                color: '#15803D',
+                whiteSpace: 'nowrap',
+              }}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card>
+          <Card
+            styles={{ body: { padding: '18px 20px' } }}
+            style={{ borderLeft: '3px solid #DC2626' }}
+          >
+            <div style={kpiHeaderStyle}>
+              <span style={kpiTitleStyle}>总费用</span>
+              <CreditCardOutlined style={{ color: '#DC2626', fontSize: 18 }} />
+            </div>
             <Statistic
-              title="总费用"
               value={stats?.total_expenses || 0}
               precision={2}
-              valueStyle={{ color: '#cf1322' }}
-              prefix={<ArrowDownOutlined />}
-              suffix="元"
+              prefix="¥"
+              valueStyle={{
+                fontSize: 28,
+                fontWeight: 600,
+                color: '#B91C1C',
+                whiteSpace: 'nowrap',
+              }}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card>
+          <Card
+            styles={{ body: { padding: '18px 20px' } }}
+            style={{
+              borderLeft: `3px solid ${(stats?.total_profit || 0) >= 0 ? '#16A34A' : '#DC2626'}`,
+            }}
+          >
+            <div style={kpiHeaderStyle}>
+              <span style={kpiTitleStyle}>净利润</span>
+              <LineChartOutlined
+                style={{
+                  color:
+                    (stats?.total_profit || 0) >= 0 ? '#16A34A' : '#DC2626',
+                  fontSize: 18,
+                }}
+              />
+            </div>
             <Statistic
-              title="净利润"
               value={stats?.total_profit || 0}
               precision={2}
-              valueStyle={{ color: stats?.total_profit && stats.total_profit > 0 ? '#3f8600' : '#cf1322' }}
-              prefix={stats?.total_profit && stats.total_profit > 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
-              suffix="元"
+              prefix="¥"
+              valueStyle={{
+                fontSize: 28,
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+                color: (stats?.total_profit || 0) >= 0 ? '#15803D' : '#B91C1C',
+              }}
             />
           </Card>
         </Col>
       </Row>
-      
+      )}
+
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24}>
           <Card title="最近订单" size="small">
@@ -161,10 +303,10 @@ const Dashboard: React.FC = () => {
               ]}
               pagination={false}
               size="small"
+              scroll={{ x: 520 }}
             />
           </Card>
         </Col>
-
       </Row>
     </PageContainer>
   );

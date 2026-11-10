@@ -23,8 +23,10 @@ print("按 Ctrl+C 停止调度器")
 print("=" * 50)
 
 # 启动Celery Beat
-if __name__ == '__main__':
+if __name__ == "__main__":
     from celery_app import celery
-    
-    # 启动beat调度器
-    celery.start(['beat', '--loglevel=info'])
+
+    # 使用副本专属的调度状态，避免读取旧项目留下的到期任务并在启动时集中补发。
+    schedule_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "celerybeat-schedule-copy")
+    os.makedirs(os.path.dirname(schedule_path), exist_ok=True)
+    celery.start(["beat", "--loglevel=info", "--schedule", schedule_path])

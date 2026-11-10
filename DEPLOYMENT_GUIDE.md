@@ -2,11 +2,76 @@
 
 ## 系统要求
 
-- Python 3.8+
+- Python 3.10（与本项目 CI 一致）
 - Node.js 16+
 - Redis 服务器
-- SQLite 或 PostgreSQL 数据库
+- PostgreSQL 14+（生产环境必需；SQLite 仅用于本地零配置体验）
 - Nginx (推荐)
+
+## 本地开发环境（macOS + PostgreSQL）
+
+macOS 自带的 5000 端口常被 AirPlay 接收器占用，且本机可能已有 PostgreSQL 实例，
+推荐按下述方式起一套独立环境（以 Homebrew 为例）：
+
+```bash
+# 1. 启动 PostgreSQL（可用 brew services 让它在开机时自启）
+brew services start postgresql@14
+
+# 2. 建专用角色与库（不要复用你其它项目的库）
+psql -d postgres -c "CREATE ROLE caseledger LOGIN PASSWORD '本地密码';"
+psql -d postgres -c "CREATE DATABASE caseledger OWNER caseledger ENCODING 'UTF8';"
+
+# 3. 后端依赖与配置
+python3.10 -m venv venv && ./venv/bin/pip install -r requirements-dev.txt
+# 编辑 .env：DATABASE_URL=postgresql://caseledger:本地密码@127.0.0.1:5432/caseledger
+
+# 4. 建表 + 初始化默认数据
+./venv/bin/flask db upgrade
+./venv/bin/python init_db.py
+
+# 5. 若需要历史数据，从 SQLite 搬过来
+./venv/bin/python migrate_to_postgres.py \
+    --source sqlite:////绝对路径/instance/caseLedger.db
+```
+
+启动服务（后端换到 5010，避免与已占用端口或其它实例冲突）：
+
+```bash
+# 后端
+HOST=127.0.0.1 PORT=5010 ./venv/bin/python run.py
+
+# 前端（另开一个终端；8002 已在本项目 CORS 白名单内）
+cd frontend && PORT=8002 API_TARGET=http://127.0.0.1:5010 npm run start:dev
+```
+
+> 同一台机器上跑多份代码副本时，请确认每份用的 `.env` 指向各自的数据库：
+> `lsof -p $(lsof -nP -iTCP:5010 -sTCP:LISTEN -t) | grep '\.db'` 可以看到进程实际打开的文件。
+
+## 数据库结构变更规范（重要）
+
+**任何表/字段变更都必须生成 Alembic 迁移，不能只写一个临时脚本改库。**
+
+原因（2026-09 实际踩坑）：给 `expenses` 加「收入」字段、给 `accounts` 加「期初余额」时，
+是用一次性脚本 `ALTER TABLE` 改的库，模型和本地库都对，但 **Alembic 基线里没有这两列**。
+结果按部署流程在服务器上执行 `flask db upgrade` 建库时，得到的是缺列的表，
+数据迁移直接失败：`column "opening_balance" does not exist`。
+
+正确做法：
+
+```bash
+# 1. 改 app/models/*.py
+# 2. 生成迁移（会自动对比模型与当前库的差异）
+flask db migrate -m "说明这次改了什么"
+# 3. 检查生成的 migrations/versions/*.py：
+#    - 给「已有数据的表」加 NOT NULL 列必须带 server_default，否则老库升级会失败
+#    - 确认没有误删/误建无关对象
+# 4. 应用
+flask db upgrade
+# 5. 在空库上验证一遍（这是唯一能发现 schema 漂移的方法）
+```
+
+**每次改完模型都要做的自检**：新库上 `flask db upgrade` 建出的表，必须与模型完全一致。
+本次就是靠「空库迁移 → 迁数据」这条链路才发现问题的。
 
 ## 部署步骤
 
@@ -56,8 +121,12 @@ FLASK_ENV=production
 FLASK_DEBUG=0
 SECRET_KEY=your-secret-key-here
 
-# 数据库配置
-DATABASE_URL=sqlite:///instance/caseLedger.db
+# 数据库配置（生产环境使用 PostgreSQL）
+DATABASE_URL=postgresql://caseledger:强密码@127.0.0.1:5432/caseledger
+
+# 连接池（可选，默认值已适配单机部署）
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
 
 # Redis 配置
 REDIS_URL=redis://localhost:6379/0
@@ -70,17 +139,32 @@ SHOPIFY_SHOP_DOMAIN=your-shop.myshopify.com
 
 # JWT 配置
 JWT_SECRET_KEY=your-jwt-secret-key
+# 登录后免登录时长（小时）：168 = 7 天，公网环境建议 12~24
+JWT_EXPIRES_HOURS=168
 ```
 
 ### 4. 数据库初始化
 
 ```bash
-# 初始化数据库
+# 1. 准备 PostgreSQL（首次部署）
+sudo apt install -y postgresql postgresql-contrib
+sudo -u postgres psql -c "CREATE ROLE caseledger LOGIN PASSWORD '强密码';"
+sudo -u postgres psql -c "CREATE DATABASE caseledger OWNER caseledger ENCODING 'UTF8';"
+
+# 2. 建表 / 升级表结构（幂等，可反复执行）
+flask db upgrade
+
+# 3. 初始化默认数据（手续费配置等，幂等）
 python init_db.py
 
-# 运行数据库迁移
-flask db upgrade
+# 4. 若要把本地 SQLite 的历史数据搬过来（在本地执行，指向服务器库）
+python migrate_to_postgres.py \
+    --source sqlite:////绝对路径/instance/caseLedger.db \
+    --target postgresql://caseledger:强密码@服务器地址:5432/caseledger
 ```
+
+> 迁移脚本会按外键顺序复制数据，并逐表核对行数、核对订单/支付/费用的金额合计，
+> 任一项不一致都会以非 0 退出码结束。目标库非空时必须加 `--recreate`（会先重建表结构）。
 
 ### 5. 前端构建
 
@@ -115,7 +199,9 @@ Type=simple
 User=www-data
 WorkingDirectory=/opt/caseledger
 Environment=PATH=/opt/caseledger/venv/bin
-ExecStart=/opt/caseledger/venv/bin/python run.py
+EnvironmentFile=/opt/caseledger/.env
+# 生产环境用 gunicorn（Flask 开发服务器不具备生产可用性与安全性）
+ExecStart=/opt/caseledger/venv/bin/gunicorn --workers 4 --worker-class gthread --threads 8 --timeout 120 --bind 127.0.0.1:5000 run:app
 Restart=always
 RestartSec=10
 
@@ -290,12 +376,35 @@ sudo systemctl stop caseledger-beat
 ### 数据备份
 
 ```bash
-# 备份数据库
-cp /opt/caseledger/instance/caseLedger.db /backup/caseLedger_$(date +%Y%m%d_%H%M%S).db
+# 备份数据库（自动识别 PostgreSQL / SQLite）
+cd /opt/caseledger
+./scripts/backup_db.sh 30          # 参数为保留天数，默认 30
 
 # 备份配置文件
 cp /opt/caseledger/.env /backup/.env_$(date +%Y%m%d_%H%M%S)
 ```
+
+`deploy.sh` 已内置 `caseledger-backup.timer`，服务器上每天 03:00 自动执行备份，
+只在 `backups/` 下清理本脚本自己生成的 `auto_*` 文件，手工备份不会被删。
+
+恢复方式：
+
+```bash
+# PostgreSQL（custom 格式）
+pg_restore --clean --no-owner -d "postgresql://caseledger:密码@127.0.0.1:5432/caseledger" \
+    backups/auto_caseledger_pg_YYYYmmdd_HHMMSS.dump
+
+# SQLite：停服务后直接替换文件
+```
+
+### 账户对账（财务数据巡检）
+
+```bash
+python scripts/reconcile_accounts.py           # 余额是否等于「期初 + 已完成充值 - 消耗」
+python scripts/reconcile_accounts.py --detail 9  # 查某个账户的最近流水，定位差额
+```
+
+存在 `ANOMALY`（余额低于流水应有金额）时退出码为 1，可挂到定时任务做巡检。
 
 ## 故障排除
 
@@ -321,7 +430,8 @@ cp /opt/caseledger/.env /backup/.env_$(date +%Y%m%d_%H%M%S)
 1. **数据库优化**
    - 定期清理过期数据
    - 添加必要的索引
-   - 考虑使用 PostgreSQL 替代 SQLite
+   - 生产环境使用 PostgreSQL（见「数据库结构变更规范」与 README 数据库章节）
+   - 报表接口已消除 N+1 查询（30 天区间约 5 条 SQL），不要退回逐日循环查库
 
 2. **缓存优化**
    - 配置 Redis 持久化
@@ -357,7 +467,13 @@ cp /opt/caseledger/.env /backup/.env_$(date +%Y%m%d_%H%M%S)
 **部署完成后，访问 http://your-domain.com 即可使用案例账本系统！**
 
 默认管理员账户：
-- 用户名：admin
-- 密码：qweasdzxc
 
-**请在首次登录后立即修改默认密码！**
+管理员账号不再硬编码在代码中，请在 `.env` 中通过以下变量配置：
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请设置一个强密码
+# 或使用哈希（推荐）: ADMIN_PASSWORD_HASH=...
+```
+
+**注意：历史默认密码 admin/qweasdzxc 已随代码公开，切勿继续使用。**

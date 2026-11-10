@@ -1,198 +1,84 @@
-from flask import jsonify, request, current_app
+"""Shopify sync endpoints.
+
+Thin routing layer over app.services.sync_service. Without ``shop_id`` the
+call applies to every shop the caller may access.
+"""
+
+from flask import request
+
 from app.api import bp
-from app.services.shopify_service import shopify_service
-from app.models.order import Order
-from app.models.product import Product
-from app import db
-from datetime import datetime, timedelta
+from app.services import sync_service
+from app.utils.responses import ok
 
 
-@bp.route('/sync/test', methods=['GET'])
+@bp.route("/sync/test", methods=["GET"])
 def test_sync_connection():
-    """测试Shopify API连接"""
-    try:
-        is_connected = shopify_service.test_connection()
-        if is_connected:
-            shop_info = shopify_service.get_shop_info()
-            return jsonify({
-                'success': True,
-                'message': 'Shopify连接成功',
-                'shop_info': shop_info
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Shopify连接失败'
-            }), 400
-    except Exception as e:
-        current_app.logger.error(f"Shopify connection test error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'连接测试失败: {str(e)}'
-        }), 500
+    """Test the Shopify connection of one or all accessible shops."""
+    result = sync_service.test_connections({"shop_id": request.args.get("shop_id")})
+    message = "Shopify连接成功" if result["all_connected"] else "部分店铺连接失败"
+    return ok(result["shops"], message=message, status=200 if result["all_connected"] else 400)
 
 
-@bp.route('/sync/orders', methods=['POST'])
+@bp.route("/sync/orders", methods=["POST"])
 def sync_orders():
-    """同步Shopify订单"""
-    try:
-        data = request.get_json() or {}
-        days_back = data.get('days_back', 30)
-        limit = data.get('limit', 250)
-        
-        # 验证参数
-        if days_back < 1 or days_back > 365:
-            return jsonify({
-                'success': False,
-                'message': '同步天数必须在1-365之间'
-            }), 400
-        
-        if limit < 1 or limit > 250:
-            return jsonify({
-                'success': False,
-                'message': '每次同步数量必须在1-250之间'
-            }), 400
-        
-        # 执行同步
-        stats = shopify_service.sync_orders(days_back=days_back, limit=limit)
-        
-        return jsonify({
-            'success': True,
-            'message': '订单同步完成',
-            'stats': stats
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Order sync error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'订单同步失败: {str(e)}'
-        }), 500
+    """Sync orders for one or all accessible shops."""
+    result = sync_service.sync_orders(request.get_json(silent=True) or {})
+    fees = result.get("fees") or []
+    fee_note = ""
+    if fees:
+        settlement = sum(item.get("settlement_updated", 0) for item in fees)
+        paypal = sum(item.get("paypal_updated", 0) for item in fees)
+        fee_note = f"，并补取真实手续费（结算 {settlement} 单 / PayPal {paypal} 单）"
+    return ok(
+        result["shops"],
+        stats=result["stats"],
+        fees=fees,
+        message=f"已完成 {result['shop_count']} 个店铺的订单同步{fee_note}",
+    )
 
 
-@bp.route('/sync/products', methods=['POST'])
+@bp.route("/sync/products", methods=["POST"])
 def sync_products():
-    """同步Shopify商品"""
-    try:
-        data = request.get_json() or {}
-        limit = data.get('limit', 250)
-        
-        # 验证参数
-        if limit < 1 or limit > 250:
-            return jsonify({
-                'success': False,
-                'message': '每次同步数量必须在1-250之间'
-            }), 400
-        
-        # 执行同步
-        stats = shopify_service.sync_products(limit=limit)
-        
-        return jsonify({
-            'success': True,
-            'message': '商品同步完成',
-            'stats': stats
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Product sync error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'商品同步失败: {str(e)}'
-        }), 500
+    """Sync products for one or all accessible shops."""
+    result = sync_service.sync_products(request.get_json(silent=True) or {})
+    return ok(
+        result["shops"], stats=result["stats"], message=f"已完成 {result['shop_count']} 个店铺的商品同步"
+    )
 
 
-@bp.route('/sync/recent', methods=['POST'])
+@bp.route("/sync/fulfillment-status", methods=["POST"])
+def sync_fulfillment_status():
+    """Reconcile the order-level fulfilment status with Shopify."""
+    result = sync_service.reconcile_fulfillment_status(request.get_json(silent=True) or {})
+    updated = result["totals"]["updated"]
+    return ok(
+        result["shops"],
+        stats=result["totals"],
+        message=f"发货状态校准完成，修正 {updated} 单",
+    )
+
+
+@bp.route("/sync/recent", methods=["POST"])
 def sync_recent_orders():
-    """同步最近订单（用于定时任务）"""
-    try:
-        data = request.get_json() or {}
-        hours = data.get('hours', 24)
-        
-        # 验证参数
-        if hours < 1 or hours > 168:  # 最多一周
-            return jsonify({
-                'success': False,
-                'message': '同步小时数必须在1-168之间'
-            }), 400
-        
-        # 执行同步
-        stats = shopify_service.sync_recent_orders(hours=hours)
-        
-        return jsonify({
-            'success': True,
-            'message': '最近订单同步完成',
-            'stats': stats
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Recent orders sync error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'最近订单同步失败: {str(e)}'
-        }), 500
+    """Sync recently updated orders."""
+    result = sync_service.sync_recent_orders(request.get_json(silent=True) or {})
+    return ok(result["shops"], message=f"已完成 {result['shop_count']} 个店铺的最近订单同步")
 
 
-@bp.route('/sync/status', methods=['GET'])
+@bp.route("/sync/status", methods=["GET"])
 def get_sync_status():
-    """获取同步状态统计"""
-    try:
-        # 获取订单统计
-        total_orders = Order.query.count()
-        recent_orders = Order.query.filter(
-            Order.created_at >= datetime.now() - timedelta(days=7)
-        ).count()
-        
-        # 获取商品统计
-        total_products = Product.query.count()
-        active_products = Product.query.filter_by(status='active').count()
-        
-        # 获取最后同步时间
-        last_order = Order.query.order_by(Order.updated_at.desc()).first()
-        last_sync_time = last_order.updated_at.isoformat() if last_order else None
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'orders': {
-                    'total': total_orders,
-                    'recent_7_days': recent_orders
-                },
-                'products': {
-                    'total': total_products,
-                    'active': active_products
-                },
-                'last_sync_time': last_sync_time
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Get sync status error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'获取同步状态失败: {str(e)}'
-        }), 500
+    """Sync counters within the caller's shop scope."""
+    return ok(sync_service.sync_status())
 
 
-@bp.route('/sync/shop-info', methods=['GET'])
+@bp.route("/sync/gateway-fees", methods=["POST"])
+def sync_gateway_fees():
+    """Pull real gateway fees (Shopify Payments settlement + PayPal receipts)."""
+    result = sync_service.sync_gateway_fees(request.get_json(silent=True) or {})
+    return ok(result["shops"], stats=result["stats"], message="网关真实手续费同步完成")
+
+
+@bp.route("/sync/shop-info", methods=["GET"])
 def get_shop_info():
-    """获取店铺信息"""
-    try:
-        shop_info = shopify_service.get_shop_info()
-        
-        if shop_info:
-            return jsonify({
-                'success': True,
-                'data': shop_info
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': '无法获取店铺信息'
-            }), 400
-            
-    except Exception as e:
-        current_app.logger.error(f"Get shop info error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'获取店铺信息失败: {str(e)}'
-        }), 500
+    """Remote shop information."""
+    return ok(sync_service.shop_info({"shop_id": request.args.get("shop_id")}))

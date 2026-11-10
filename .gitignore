@@ -37,6 +37,8 @@ venv.bak/
 
 # Database
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 instance/
@@ -74,6 +76,7 @@ yarn-error.log*
 
 # Frontend Build
 frontend/dist/
+frontend/dist-dev/
 frontend/.umi/
 frontend/.umi-production/
 frontend/build/
@@ -87,6 +90,9 @@ coverage.xml
 *.cover
 .hypothesis/
 
+# Playwright CLI artifacts (browser snapshots / screenshots)
+.playwright-cli/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -97,6 +103,12 @@ coverage.xml
 *.bak
 *.backup
 *.tmp
+
+# Local secret backups / database backups (never commit)
+backups/
+secrets_backup_*/
+*.pem
+*.key
 
 # Migration files (keep structure but not data)
 migrations/versions/*.pyc
@@ -119,3 +131,12 @@ deploy.log
 # Temporary files
 temp/
 tmp/
+
+# Local generated artifacts (PDF previews, screenshots, exports)
+output/
+outputs/
+Codex 图像*.png
+
+# 项目测试（上面 test_*.py 规则只针对临时脚本）
+!tests/
+!tests/**

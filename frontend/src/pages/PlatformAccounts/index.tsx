@@ -1,22 +1,21 @@
 import { PageContainer, ProTable } from '@ant-design/pro-components';
 import { Button, Space, Modal, Form, Input, Select, message, Tag, Popconfirm, Tooltip } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, EyeInvisibleOutlined, SearchOutlined, CopyOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, EyeInvisibleOutlined, CopyOutlined } from '@ant-design/icons';
 import React, { useState, useRef, useEffect } from 'react';
 import type { ProColumns, ActionType } from '@ant-design/pro-components';
-import { request } from '@umijs/max';
-import { formatBeijingTime } from '@/utils/timezone';
+import {
+  listPlatformAccounts,
+  getPlatformOptions,
+  createPlatformAccount,
+  updatePlatformAccount,
+  deletePlatformAccount,
+  getPlatformAccountPassword,
+} from '@/services/platformAccounts';
+import type { PlatformAccountItem } from '@/services/platformAccounts';
+import { persistedPagination } from '@/utils/pagination';
 
 const { TextArea } = Input;
 const { Option } = Select;
-
-interface PlatformAccountItem {
-  id: string;
-  platform: string;
-  username: string;
-  notes?: string;
-  created_at: string;
-  updated_at: string;
-}
 
 interface CreateFormData {
   platform: string;
@@ -46,7 +45,7 @@ const PlatformAccounts: React.FC = () => {
   // 获取平台列表
   const fetchPlatforms = async () => {
     try {
-      const response = await request('/api/platform-accounts/platforms');
+      const response = await getPlatformOptions();
       if (response.success) {
         setPlatforms(response.data || []);
       }
@@ -78,9 +77,7 @@ const PlatformAccounts: React.FC = () => {
         searchParams.search = params.username;
       }
       
-      const response = await request('/api/platform-accounts', {
-        params: searchParams,
-      });
+      const response = await listPlatformAccounts(searchParams);
 
       if (response.success) {
         return {
@@ -94,7 +91,7 @@ const PlatformAccounts: React.FC = () => {
         success: false,
         total: 0,
       };
-    } catch (error) {
+    } catch (_error) {
       message.error('获取平台账户列表失败');
       return {
         data: [],
@@ -107,10 +104,7 @@ const PlatformAccounts: React.FC = () => {
   // 创建平台账户
   const handleCreate = async (values: CreateFormData) => {
     try {
-      const response = await request('/api/platform-accounts', {
-        method: 'POST',
-        data: values,
-      });
+      const response = await createPlatformAccount(values);
 
       if (response.success) {
         message.success('平台账户创建成功');
@@ -121,7 +115,7 @@ const PlatformAccounts: React.FC = () => {
       } else {
         message.error(response.message || '创建失败');
       }
-    } catch (error) {
+    } catch (_error) {
       message.error('创建平台账户失败');
     }
   };
@@ -131,10 +125,7 @@ const PlatformAccounts: React.FC = () => {
     if (!currentRecord) return;
 
     try {
-      const response = await request(`/api/platform-accounts/${currentRecord.id}`, {
-        method: 'PUT',
-        data: values,
-      });
+      const response = await updatePlatformAccount(Number(currentRecord.id), values);
 
       if (response.success) {
         message.success('平台账户更新成功');
@@ -146,7 +137,7 @@ const PlatformAccounts: React.FC = () => {
       } else {
         message.error(response.message || '更新失败');
       }
-    } catch (error) {
+    } catch (_error) {
       message.error('更新平台账户失败');
     }
   };
@@ -154,9 +145,7 @@ const PlatformAccounts: React.FC = () => {
   // 删除平台账户
   const handleDelete = async (id: string) => {
     try {
-      const response = await request(`/api/platform-accounts/${id}`, {
-        method: 'DELETE',
-      });
+      const response = await deletePlatformAccount(Number(id));
 
       if (response.success) {
         message.success('平台账户删除成功');
@@ -165,7 +154,7 @@ const PlatformAccounts: React.FC = () => {
       } else {
         message.error(response.message || '删除失败');
       }
-    } catch (error) {
+    } catch (_error) {
       message.error('删除平台账户失败');
     }
   };
@@ -173,12 +162,12 @@ const PlatformAccounts: React.FC = () => {
   // 获取密码
   const fetchPassword = async (id: string) => {
     try {
-      const response = await request(`/api/platform-accounts/${id}/password`);
+      const response = await getPlatformAccountPassword(Number(id));
       if (response.success && response.data.password) {
         return response.data.password;
       }
       return null;
-    } catch (error) {
+    } catch (_error) {
       message.error('获取密码失败');
       return null;
     }
@@ -189,20 +178,21 @@ const PlatformAccounts: React.FC = () => {
     try {
       await navigator.clipboard.writeText(text);
       message.success(`${type}已复制到剪贴板`);
-    } catch (error) {
+    } catch (_error) {
       message.error('复制失败');
     }
   };
 
   // 切换密码显示状态
   const togglePasswordVisibility = async (record: PlatformAccountItem) => {
-    const isVisible = passwordVisible[record.id];
+    const key = String(record.id);
+    const isVisible = passwordVisible[key];
     
     if (!isVisible) {
-      const password = await fetchPassword(record.id);
+      const password = await fetchPassword(key);
       if (password) {
-        setPasswords(prev => ({ ...prev, [record.id]: password }));
-        setPasswordVisible(prev => ({ ...prev, [record.id]: true }));
+        setPasswords(prev => ({ ...prev, [key]: password }));
+        setPasswordVisible(prev => ({ ...prev, [key]: true }));
         // 5秒后自动隐藏密码
         setTimeout(() => {
           setPasswordVisible(prev => ({ ...prev, [record.id]: false }));
@@ -303,7 +293,8 @@ const PlatformAccounts: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 168,
+      fixed: 'right',
       search: false,
       render: (_, record) => (
         <Space>
@@ -317,7 +308,7 @@ const PlatformAccounts: React.FC = () => {
           </Tooltip>
           <Popconfirm
             title="确定要删除这个平台账户吗？"
-            onConfirm={() => handleDelete(record.id)}
+            onConfirm={() => handleDelete(String(record.id))}
             okText="确定"
             cancelText="取消"
           >
@@ -336,27 +327,16 @@ const PlatformAccounts: React.FC = () => {
   ];
 
   return (
-    <PageContainer>
+    <PageContainer
+      header={{
+        title: '平台账号',
+        subTitle: '保存各平台后台的登录凭据（密码加密存储，仅管理员可见）',
+      }}
+    >
       <ProTable<PlatformAccountItem>
-        headerTitle="平台账户管理"
         actionRef={actionRef}
         rowKey="id"
-        search={{
-          labelWidth: 'auto',
-          optionRender: (searchConfig, formProps, dom) => [
-            ...dom,
-            <Button
-              key="search"
-              type="primary"
-              icon={<SearchOutlined />}
-              onClick={() => {
-                formProps?.form?.submit();
-              }}
-            >
-              搜索
-            </Button>,
-          ],
-        }}
+        search={{ labelWidth: 'auto' }}
         toolBarRender={() => [
           <Button
             key="create"
@@ -370,7 +350,7 @@ const PlatformAccounts: React.FC = () => {
         request={fetchPlatformAccounts}
         columns={columns}
         pagination={{
-          defaultPageSize: 20,
+          ...persistedPagination('platform-accounts', 20),
           showSizeChanger: true,
           showQuickJumper: true,
         }}

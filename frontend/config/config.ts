@@ -17,6 +17,9 @@ const { REACT_APP_ENV = 'dev' } = process.env;
 const PUBLIC_PATH: string = '/';
 
 export default defineConfig({
+  // 开发服务和生产构建不能共用 dist：同时运行 build 会覆盖 dev 的异步脚本，
+  // 子路径刷新时服务器把缺失脚本回退成 HTML，造成白屏。
+  outputPath: process.env.NODE_ENV === 'development' ? 'dist-dev' : 'dist',
   /**
    * @name 开启 hash 模式
    * @description 让 build 之后的产物包含 hash 后缀。通常用于增量发布和避免浏览器加载缓存。
@@ -31,9 +34,15 @@ export default defineConfig({
    * @description 设置 ie11 不一定完美兼容，需要检查自己使用的所有依赖
    * @doc https://umijs.org/docs/api/config#targets
    */
-  // targets: {
-  //   ie: 11,
-  // },
+  // iPad Air 2 / iPadOS 13.3.1：Safari 13 不支持 ??、?. 等较新语法。
+  // 显式指定最低版本，同时让 Umi 按此版本补齐运行时 API。
+  targets: {
+    safari: 13,
+    ios: 13,
+    chrome: 80,
+    firefox: 78,
+    edge: 80,
+  },
   /**
    * @name 路由的配置，不在路由中引入的文件不会编译
    * @description 只支持 path，component，routes，redirect，wrappers，title 的配置
@@ -119,7 +128,60 @@ export default defineConfig({
       theme: {
         cssVar: true,
         token: {
-          fontFamily: 'AlibabaSans, sans-serif',
+          // 使用设备字体，页面启动不依赖外部字体服务。
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+          // 主色：专业深蓝（金融/数据类后台），琥珀色作为强调
+          colorPrimary: '#1E40AF',
+          colorInfo: '#1E40AF',
+          colorLink: '#1E40AF',
+          colorSuccess: '#16A34A',
+          colorWarning: '#F59E0B',
+          colorError: '#DC2626',
+          colorTextBase: '#0F172A',
+          colorBgLayout: '#F5F7FB',
+          colorBorderSecondary: '#E9EEF6',
+          borderRadius: 8,
+          borderRadiusLG: 12,
+          controlHeight: 36,
+          fontSize: 14,
+          wireframe: false,
+          boxShadowTertiary: '0 1px 2px rgba(15, 23, 42, 0.04)',
+        },
+        components: {
+          Layout: {
+            bodyBg: '#F5F7FB',
+            headerBg: '#FFFFFF',
+            siderBg: '#FFFFFF',
+          },
+          Menu: {
+            itemBorderRadius: 8,
+            itemHeight: 42,
+            itemSelectedBg: '#EEF4FF',
+            itemSelectedColor: '#1E40AF',
+            itemActiveBg: '#F4F8FF',
+            itemMarginInline: 8,
+          },
+          Card: {
+            borderRadiusLG: 12,
+            paddingLG: 20,
+          },
+          Table: {
+            headerBg: '#F7F9FC',
+            headerColor: '#475569',
+            headerSplitColor: 'transparent',
+            borderColor: '#EEF2F7',
+            rowHoverBg: '#F7FAFF',
+            cellPaddingBlock: 12,
+          },
+          Button: {
+            borderRadius: 8,
+            primaryShadow: 'none',
+            fontWeight: 500,
+          },
+          Statistic: {
+            contentFontSize: 26,
+          },
         },
       },
     },
@@ -144,6 +206,7 @@ export default defineConfig({
     // 解决首次加载时白屏的问题
     { src: join(PUBLIC_PATH, 'scripts/loading.js'), async: true },
   ],
+  // 不加载外部字体样式：阻塞的 stylesheet 会阻止后面的启动脚本执行。
   //================ pro 插件配置 =================
   presets: ['umi-presets-pro'],
   /**

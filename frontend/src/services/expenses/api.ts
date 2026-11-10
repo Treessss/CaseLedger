@@ -2,6 +2,8 @@ import { request } from '@umijs/max';
 
 export interface ExpenseItem {
   id: number;
+  /** 流水方向：expense=支出，income=额外收入 */
+  record_type?: 'expense' | 'income';
   category: string;
   description: string;
   amount: number;
@@ -30,15 +32,21 @@ export interface ExpenseItem {
     customer_name: string;
     total_price: number;
   }[]; // 所有关联的订单信息
-  account_id?: string; // 扣费账户ID
+  account_id?: string | number | null; // null explicitly removes the linked account
   account_name?: string; // 扣费账户名称
+  /** 归属店铺：在哪个店铺创建就记在哪个店铺，各店铺账目隔离 */
+  shop_id?: number | null;
+  shop_name?: string | null;
 }
 
 export interface ExpenseListParams {
   page?: number;
   per_page?: number;
   category?: string;
+  record_type?: 'expense' | 'income';
   status?: string;
+  description?: string;
+  submitter?: string;
   start_date?: string;
   end_date?: string;
   search?: string;
@@ -124,6 +132,13 @@ export async function getExpenseStats() {
 /** 获取费用分类 */
 export async function getExpenseCategories() {
   return request('/api/expenses/categories', {
+    method: 'GET',
+  });
+}
+
+/** 获取收入分类（额外收入） */
+export async function getIncomeCategories() {
+  return request('/api/expenses/income-categories', {
     method: 'GET',
   });
 }

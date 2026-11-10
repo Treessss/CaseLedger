@@ -15,6 +15,16 @@ declare namespace API {
     unreadCount?: number;
     country?: string;
     access?: string;
+    /** 管理员为 null（不受限），子账户为其可见的店铺 id */
+    shop_ids?: number[] | null;
+    /** 已授予的功能权限 key（管理员为全部） */
+    permissions?: string[];
+    /** 当前账号可见的店铺列表 */
+    shops?: Array<{
+      id: number;
+      name: string;
+      shop_url: string;
+    }>;
     geographic?: {
       province?: { label?: string; key?: string };
       city?: { label?: string; key?: string };
@@ -27,6 +37,9 @@ declare namespace API {
     status?: string;
     type?: string;
     currentAuthority?: string;
+    /** 登录成功后返回的 JWT 令牌 */
+    token?: string;
+    message?: string;
   };
 
   type PageParams = {

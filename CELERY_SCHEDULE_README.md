@@ -9,7 +9,9 @@
 ### 1. 全量同步任务
 - **任务名称**: `sync-shopify-orders-full-noon` 和 `sync-shopify-orders-full-midnight`
 - **执行时间**: 每天中午12:00和晚上12:00（凌晨0:00）
-- **功能**: 同步历史所有订单（默认365天内）
+- **功能**: 按 Shopify 分页游标逐页同步全部历史订单，不按日期或 250 笔截断；旧订单后续退款、发货或备注变更也会重新读取
+- **退款口径**: 订单同步结束后重算 Shopify Payments 全历史结算流水，避免只看最近几天退款、遗漏原始收款
+- **权限要求**: 店铺应用须有 `read_orders` 和 `read_all_orders`；缺少后者时任务明确失败，不会误报全量成功
 - **任务函数**: `app.tasks.sync_shopify_orders_full_task`
 
 ### 2. 增量同步任务
@@ -21,6 +23,9 @@
 ### 3. 其他任务
 - **产品同步**: 每天执行一次
 - **连接测试**: 每30分钟执行一次
+- **网关真实手续费**: 每小时的20分同步 Shopify Payments 结算流水
+  (`app.tasks.sync_gateway_fees_task`)。默认不带 PayPal 回执；
+  需要补 PayPal 时把 `include_paypal` 传 True（逐单请求，耗时与订单量成正比）。
 
 ## 启动方式
 
@@ -82,7 +87,7 @@ python test_celery_schedule.py
 ```python
 from app.tasks import sync_shopify_orders_full_task, sync_shopify_orders_daily_task
 
-# 手动触发全量同步
+# 手动触发全量历史订单同步（可能耗时较长）
 result = sync_shopify_orders_full_task.delay()
 
 # 手动触发增量同步

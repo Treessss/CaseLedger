@@ -11,6 +11,7 @@
       "!**/src/services/**",
       "!**/mock/**",
       "!**/dist/**",
+      "!**/dist-dev/**",
       "!**/server/**",
       "!**/public/**",
       "!**/coverage/**",
@@ -30,7 +31,8 @@
         "noExplicitAny": "off"
       },
       "correctness": {
-        "useExhaustiveDependencies": "off"
+        "useExhaustiveDependencies": "off",
+        "useUniqueElementIds": "warn"
       },
       "a11y": {
         "noStaticElementInteractions": "off",

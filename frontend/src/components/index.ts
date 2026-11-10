@@ -6,7 +6,21 @@
  * 布局组件
  */
 import Footer from './Footer';
+import PackingItems from './PackingItems';
+import RecipientInfo from './RecipientInfo';
+import TagList from './TagList';
+import ShopRequiredNotice from './ShopRequiredNotice';
 import { Question, SelectLang } from './RightContent';
 import { AvatarDropdown, AvatarName } from './RightContent/AvatarDropdown';
 
-export { AvatarDropdown, AvatarName, Footer, Question, SelectLang };
+export {
+  AvatarDropdown,
+  AvatarName,
+  Footer,
+  PackingItems,
+  Question,
+  RecipientInfo,
+  SelectLang,
+  ShopRequiredNotice,
+  TagList,
+};

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily CaseLedger-copy PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=caseledger-copy-backup.service
+
+[Install]
+WantedBy=timers.target

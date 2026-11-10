@@ -21,16 +21,25 @@ print("按 Ctrl+C 停止工作进程")
 print("=" * 50)
 
 # 启动Celery Worker
-if __name__ == '__main__':
+if __name__ == "__main__":
     from celery_app import celery
     from config import Config
 
-    worker_args = ['worker', '--loglevel=info', '--hostname=caseledger-worker@%h', '--queues=sync,test']
-    is_sqlite = str(Config.SQLALCHEMY_DATABASE_URI).startswith('sqlite')
+    worker_args = ["worker", "--loglevel=info", "--hostname=caseledger-copy-worker@%h", "--queues=sync,test,mail,tracking,tracking_history"]
+    is_sqlite = str(Config.SQLALCHEMY_DATABASE_URI).startswith("sqlite")
+    is_macos = sys.platform == "darwin"
 
-    if is_sqlite:
-        # SQLite不适合多进程并发写入，使用单进程避免database is locked
-        worker_args.extend(['--pool=solo', '--concurrency=1'])
+    # macOS 上 Python 3.8+ 的多进程默认用 spawn，Celery 的 prefork 池在子进程里
+    # 拿不到 fast_trace_task 需要的线程局部状态，任务会立刻失败并报：
+    #   ValueError: not enough values to unpack (expected 3, got 0)
+    # 换成 solo 池即可规避；本项目是小时级定时同步，单进程完全够用。
+    if is_sqlite or is_macos:
+        worker_args.extend(["--pool=solo", "--concurrency=1"])
+        if is_sqlite:
+            # SQLite 不适合多进程并发写入，单进程同时避免 database is locked
+            print("检测到 SQLite：使用单进程池")
+        else:
+            print("检测到 macOS：使用单进程池（规避 Celery prefork 在 spawn 下的已知问题）")
 
     # 启动worker进程，监听所有队列
     celery.start(worker_args)

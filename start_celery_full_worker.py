@@ -19,15 +19,15 @@ print()
 print("按 Ctrl+C 停止工作进程")
 print("=" * 50)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from celery_app import celery
     from config import Config
 
-    worker_args = ['worker', '--loglevel=info', '--hostname=caseledger-full@%h', '--queues=sync_full']
-    is_sqlite = str(Config.SQLALCHEMY_DATABASE_URI).startswith('sqlite')
+    worker_args = ["worker", "--loglevel=info", "--hostname=caseledger-copy-full@%h", "--queues=sync_full"]
+    is_sqlite = str(Config.SQLALCHEMY_DATABASE_URI).startswith("sqlite")
 
-    if is_sqlite:
-        # SQLite不适合多进程并发写入，使用单进程避免database is locked
-        worker_args.extend(['--pool=solo', '--concurrency=1'])
+    if is_sqlite or sys.platform == "darwin":
+        # SQLite 避免写锁；macOS 避免 Celery prefork/spawn 的 fast_trace_task 错误。
+        worker_args.extend(["--pool=solo", "--concurrency=1"])
 
     celery.start(worker_args)

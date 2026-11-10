@@ -33,6 +33,13 @@ command -v node >/dev/null 2>&1 || { echo "错误: 需要安装 Node.js"; exit 1
 command -v redis-cli >/dev/null 2>&1 || { echo "错误: 需要安装 Redis"; exit 1; }
 command -v nginx >/dev/null 2>&1 || { echo "错误: 需要安装 Nginx"; exit 1; }
 
+# 生产环境推荐使用 PostgreSQL（见 README 的数据库迁移章节）
+if ! command -v psql >/dev/null 2>&1; then
+    echo "警告: 未检测到 psql（PostgreSQL 客户端）"
+    echo "      生产环境建议执行: sudo apt install -y postgresql postgresql-contrib"
+    echo "      如坚持使用 SQLite，请忽略此警告；SQLite 只适合单机低并发场景"
+fi
+
 # 检查 Redis 是否运行
 if ! redis-cli ping >/dev/null 2>&1; then
     echo "错误: Redis 服务未运行"
@@ -77,6 +84,15 @@ fi
 
 # 初始化数据库
 echo "初始化数据库..."
+DB_URL_LINE=$(grep -E '^DATABASE_URL=' .env | head -1 || true)
+if echo "$DB_URL_LINE" | grep -qE '^DATABASE_URL=(postgres|postgresql)'; then
+    echo "检测到 PostgreSQL，执行数据库迁移..."
+    # 首次部署会自动创建全部表；后续发布用同一条命令升级表结构
+    flask db upgrade
+else
+    echo "未配置 PostgreSQL，按本地 SQLite 初始化..."
+fi
+# 初始化默认配置（幂等，可重复执行）
 python init_db.py
 
 # 构建前端
@@ -109,7 +125,8 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR
 Environment=PATH=$APP_DIR/venv/bin
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$APP_DIR/venv/bin/python run.py
+# 生产环境使用 gunicorn（Flask 开发服务器不具备生产可用性与安全性）
+ExecStart=$APP_DIR/venv/bin/gunicorn --workers 4 --worker-class gthread --threads 8 --timeout 120 --bind 127.0.0.1:5000 run:app
 Restart=always
 RestartSec=10
 KillMode=mixed
@@ -165,6 +182,33 @@ TimeoutStopSec=5
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# 创建数据库自动备份服务（每天 03:00，保留 30 天）
+echo "创建数据库备份定时任务..."
+sudo tee /etc/systemd/system/caseledger-backup.service > /dev/null <<EOF
+[Unit]
+Description=CaseLedger database backup
+
+[Service]
+Type=oneshot
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$APP_DIR/.env
+ExecStart=$APP_DIR/scripts/backup_db.sh 30
+EOF
+
+sudo tee /etc/systemd/system/caseledger-backup.timer > /dev/null <<EOF
+[Unit]
+Description=Run CaseLedger database backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
 EOF
 
 # 创建 Nginx 配置
@@ -246,6 +290,10 @@ sudo systemctl daemon-reload
 echo "启动应用服务..."
 sudo systemctl enable caseledger-app caseledger-worker caseledger-beat
 sudo systemctl start caseledger-app caseledger-worker caseledger-beat
+
+# 启用数据库每日自动备份
+sudo systemctl enable caseledger-backup.timer
+sudo systemctl start caseledger-backup.timer
 
 # 重启 Nginx
 echo "重启 Nginx..."

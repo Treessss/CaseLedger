@@ -37,6 +37,21 @@ export async function getRecentOrders() {
   });
 }
 
+export interface WorkloadSummary {
+  pending_ship: number;
+  ready_to_ship: number;
+  awaiting_purchase: number;
+  shipped_today: number;
+}
+
+/** 今日作业看板：待发货 / 可出库 / 待采购 / 今日已出库 */
+export async function getWorkload() {
+  return request<{ success: boolean; data: WorkloadSummary }>(
+    '/api/orders/workload',
+    { method: 'GET' },
+  );
+}
+
 /** 获取费用分析数据 */
 export async function getExpenseAnalysis(params?: {
   start_date?: string;

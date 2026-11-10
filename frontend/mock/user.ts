@@ -122,7 +122,8 @@ export default {
   'POST /api/login/account': async (req: Request, res: Response) => {
     const { password, username, type } = req.body;
     await waitTime(2000);
-    if (password === 'qweasdzxc' && username === 'admin') {
+    // 本地 mock 专用占位凭据，不要与真实后台账号保持一致
+    if (password === 'mock-password' && username === 'admin') {
       res.send({
         status: 'ok',
         type,

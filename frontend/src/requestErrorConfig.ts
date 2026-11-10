@@ -1,6 +1,8 @@
 import type { RequestOptions } from '@@/plugin-request/request';
 import type { RequestConfig } from '@umijs/max';
 import { message, notification } from 'antd';
+import { clearToken, getToken } from '@/utils/auth';
+import { ALL_SHOPS, getSelectedShopId } from '@/utils/shop';
 
 // 错误处理方案： 错误类型
 enum ErrorShowType {
@@ -70,6 +72,14 @@ export const errorConfig: RequestConfig = {
           }
         }
       } else if (error.response) {
+        // 未登录或令牌过期：清理本地令牌并回到登录页
+        if (error.response.status === 401) {
+          clearToken();
+          if (window.location.pathname !== '/user/login') {
+            window.location.href = '/user/login';
+          }
+          return;
+        }
         // Axios 的错误
         // 请求成功发出且服务器也响应了状态码，但状态代码超出了 2xx 的范围
         message.error(`Response status:${error.response.status}`);
@@ -88,13 +98,33 @@ export const errorConfig: RequestConfig = {
   // 请求拦截器
   requestInterceptors: [
     (config: RequestOptions) => {
-      // 拦截请求配置，进行个性化处理。
-      if (config?.url) {
-        const separator = config.url.includes('?') ? '&' : '?';
-        const url = config.url + separator + 'token=123';
-        return { ...config, url };
+      // 统一在请求头中携带登录令牌（不再把 token 拼进 URL）
+      const token = getToken();
+      const nextConfig: RequestOptions = {
+        ...config,
+        headers: {
+          ...(config.headers || {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      };
+
+      // 顶部切换了具体店铺时，给请求附加 shop_id，实现全站按店铺过滤
+      const shopId = getSelectedShopId();
+      if (shopId && shopId !== ALL_SHOPS) {
+        const separator = (nextConfig.url || '').includes('?') ? '&' : '?';
+        nextConfig.url = `${nextConfig.url}${separator}shop_id=${shopId}`;
+        // 写操作的 shop_id 由后端从请求体中读取，这里同步带上
+        const method = (nextConfig.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH'].includes(method) && nextConfig.data) {
+          if (nextConfig.data instanceof FormData) {
+            // Keep the browser-generated multipart boundary; only append the shop.
+            nextConfig.data.append('shop_id', String(shopId));
+          } else if (typeof nextConfig.data === 'object' && !Array.isArray(nextConfig.data)) {
+            nextConfig.data = { shop_id: Number(shopId), ...nextConfig.data };
+          }
+        }
       }
-      return config;
+      return nextConfig;
     },
   ],
 

@@ -1,5 +1,5 @@
 import { PageContainer, ProForm, ProFormText, ProFormDigit, ProFormSelect, ProFormTextArea } from '@ant-design/pro-components';
-import { Card, Button, message, Spin } from 'antd';
+import { Alert, Card, Button, message, Spin } from 'antd';
 import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons';
 import React, { useState, useEffect } from 'react';
 import { history, useParams } from '@umijs/max';
@@ -12,6 +12,8 @@ interface OrderData {
   customer_phone?: string;
   customer_email?: string;
   total_price: number;
+  /** 订单币种（USD / GBP / HKD ...），金额输入框的前缀跟随它，不能写死成 $ */
+  currency?: string;
   actual_received?: number;
   product_cost?: number;
   shipping_cost?: number;
@@ -32,7 +34,7 @@ const OrderEdit: React.FC = () => {
     
     try {
       setLoading(true);
-      const response = await getOrderDetail(parseInt(id));
+      const response = await getOrderDetail(parseInt(id, 10));
       if (response.success) {
         setOrderData(response.data);
       } else {
@@ -53,6 +55,9 @@ const OrderEdit: React.FC = () => {
   const handleBack = () => {
     history.back();
   };
+
+  // 金额单位以订单自身币种为准，缺省才退回 $
+  const moneyPrefix = orderData?.currency || '$';
 
   const handleSubmit = async (values: any) => {
     if (!orderData) return;
@@ -105,6 +110,7 @@ const OrderEdit: React.FC = () => {
       ]}
     >
       <Card>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="物流标签和仓库出库请在订单详情中操作；Shopify 发货状态不代表实物出库。" />
         <ProForm
           initialValues={{
             customer_name: orderData.customer_name,
@@ -115,7 +121,6 @@ const OrderEdit: React.FC = () => {
             product_cost: orderData.product_cost || 0,
             shipping_cost: orderData.shipping_cost || 0,
             financial_status: orderData.financial_status,
-            fulfillment_status: orderData.fulfillment_status,
             note: orderData.note,
           }}
           onFinish={handleSubmit}
@@ -123,7 +128,7 @@ const OrderEdit: React.FC = () => {
             searchConfig: {
               submitText: '保存',
             },
-            render: (props, doms) => {
+            render: (props, _doms) => {
               return [
                 <Button
                   key="submit"
@@ -167,7 +172,7 @@ const OrderEdit: React.FC = () => {
               min={0}
               precision={2}
               fieldProps={{
-                addonBefore: '$',
+                addonBefore: moneyPrefix,
               }}
             />
           </ProForm.Group>
@@ -180,7 +185,7 @@ const OrderEdit: React.FC = () => {
               min={0}
               precision={2}
               fieldProps={{
-                addonBefore: '$',
+                addonBefore: moneyPrefix,
               }}
             />
             <ProFormDigit
@@ -190,7 +195,7 @@ const OrderEdit: React.FC = () => {
               min={0}
               precision={2}
               fieldProps={{
-                addonBefore: '$',
+                addonBefore: moneyPrefix,
               }}
               tooltip="商品采购成本"
             />
@@ -204,7 +209,7 @@ const OrderEdit: React.FC = () => {
               min={0}
               precision={2}
               fieldProps={{
-                addonBefore: '$',
+                addonBefore: moneyPrefix,
               }}
               tooltip="物流运输费用"
             />
@@ -215,21 +220,9 @@ const OrderEdit: React.FC = () => {
               options={[
                 { label: '已付款', value: 'paid' },
                 { label: '待付款', value: 'pending' },
+                { label: '部分退款', value: 'partially_refunded' },
                 { label: '已退款', value: 'refunded' },
                 { label: '已取消', value: 'cancelled' },
-              ]}
-            />
-          </ProForm.Group>
-          
-          <ProForm.Group>
-            <ProFormSelect
-              name="fulfillment_status"
-              label="发货状态"
-              width="md"
-              options={[
-                { label: '已发货', value: 'fulfilled' },
-                { label: '未发货', value: 'unfulfilled' },
-                { label: '部分发货', value: 'partial' },
               ]}
             />
           </ProForm.Group>

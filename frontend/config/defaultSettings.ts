@@ -8,20 +8,42 @@ const Settings: ProLayoutProps & {
   logo?: string;
 } = {
   navTheme: 'light',
-  // CaseLedger 主题色 - 现代蓝色
-  colorPrimary: '#2563eb',
+  // 主色：专业深蓝（金融/数据类后台常用），配合琥珀色做强调
+  colorPrimary: '#1E40AF',
   layout: 'side',
   contentWidth: 'Fluid',
-  fixedHeader: false,
+  fixedHeader: true,
   fixSiderbar: true,
+  siderWidth: 208,
   colorWeak: false,
   title: 'CaseLedger',
   pwa: true,
   logo: '/logo.svg',
   iconfontUrl: '',
   token: {
-    // 参见ts声明，demo 见文档，通过token 修改样式
-    //https://procomponents.ant.design/components/layout#%E9%80%9A%E8%BF%87-token-%E4%BF%AE%E6%94%B9%E6%A0%B7%E5%BC%8F
+    // 布局令牌：https://procomponents.ant.design/components/layout#token
+    bgLayout: '#F5F7FB',
+    header: {
+      colorBgHeader: '#FFFFFF',
+      colorTextMenu: '#475569',
+      colorTextMenuSelected: '#1E40AF',
+      colorTextRightActionsItem: '#64748B',
+    },
+    sider: {
+      colorMenuBackground: '#FFFFFF',
+      colorTextMenuTitle: '#0F172A',
+      colorTextMenu: '#475569',
+      colorTextMenuSelected: '#1E40AF',
+      colorTextMenuItemHover: '#1E40AF',
+      colorBgMenuItemHover: '#F5F8FF',
+      colorBgMenuItemSelected: '#EEF4FF',
+      colorMenuItemDivider: 'transparent',
+    },
+    pageContainer: {
+      colorBgPageContainer: 'transparent',
+      paddingInlinePageContainerContent: 24,
+      paddingBlockPageContainerContent: 20,
+    },
   },
 };
 

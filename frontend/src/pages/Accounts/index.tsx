@@ -1,17 +1,67 @@
+import {
+  ClearOutlined,
+  DollarOutlined,
+  ExclamationCircleOutlined,
+  HistoryOutlined,
+  PlusOutlined,
+  SyncOutlined,
+} from '@ant-design/icons';
+import type { ActionType, ProColumns } from '@ant-design/pro-components';
 import { PageContainer, ProTable } from '@ant-design/pro-components';
-import { Button, Tag, Space, Modal, Form, Input, Select, InputNumber, message, Card, Row, Col, Statistic, DatePicker, Tooltip } from 'antd';
-import { PlusOutlined, ExclamationCircleOutlined, ReloadOutlined, HistoryOutlined, DollarOutlined, SyncOutlined } from '@ant-design/icons';
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import type { ProColumns, ActionType } from '@ant-design/pro-components';
+import {
+  Button,
+  Card,
+  Col,
+  DatePicker,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  message,
+  Row,
+  Select,
+  Space,
+  Statistic,
+  Tag,
+  Tooltip,
+} from 'antd';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useAccess } from '@umijs/max';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
-import { getCurrencyOptions, convertCurrency, formatCurrency, SUPPORTED_CURRENCIES } from '@/services/exchange';
-import { formatBeijingTime, formatShortBeijingTime, convertDateRangeToUTC, getCurrentMonthUTCRange } from '@/utils/timezone';
-import { request } from '@umijs/max';
+
+import {
+  createAccount,
+  getAccounts as fetchAccounts,
+  getAccountConsumptions,
+  getAccountRecharges,
+  getAccountSummary,
+  rechargeAccount,
+  updateAccount,
+} from '@/services/accounts';
+import {
+  convertCurrency,
+  formatCurrency,
+  getCurrencyOptions,
+  SUPPORTED_CURRENCIES,
+} from '@/services/exchange';
+import { listShops, type ShopItem } from '@/services/shops/api';
+import { getToken } from '@/utils/auth';
+import { persistedPagination } from '@/utils/pagination';
+import { ALL_SHOPS, getSelectedShopId } from '@/utils/shop';
+import {
+  formatBeijingTime,
+  formatShortBeijingTime,
+} from '@/utils/timezone';
+
+/** 安全读取币种符号（SUPPORTED_CURRENCIES 的键是字面量联合类型） */
+const currencySymbol = (code: string): string =>
+  (SUPPORTED_CURRENCIES as Record<string, { symbol?: string }>)[code]?.symbol ||
+  '¥';
 
 const { RangePicker } = DatePicker;
 const { Option } = Select;
@@ -19,15 +69,16 @@ const { TextArea } = Input;
 
 interface AccountItem {
   id: string;
+  shop_id?: number;
   account_name: string;
   platform: string;
   account_id?: string;
   description?: string;
   balance: number;
   currency: string;
-  original_amount?: number;  // 原始金额
-  original_currency?: string;  // 原始货币
-  exchange_rate?: number;  // 汇率
+  original_amount?: number; // 原始金额
+  original_currency?: string; // 原始货币
+  exchange_rate?: number; // 汇率
   status: 'active' | 'inactive' | 'suspended';
   created_at: string;
   updated_at: string;
@@ -35,21 +86,34 @@ interface AccountItem {
 
 interface RechargeRecord {
   id: string;
+  account_id?: number;
+  account_name?: string;
   amount: number;
-  recharge_method: string;
+  currency?: string;
+  // 后端可能返回 null，因此这些字段是可选的
+  recharge_method?: string;
   transaction_id?: string;
   description?: string;
-  status: 'pending' | 'completed' | 'confirmed' | 'failed' | 'cancelled';
-  recharge_date: string;
+  status?:
+    | 'pending'
+    | 'completed'
+    | 'confirmed'
+    | 'failed'
+    | 'cancelled'
+    | string;
+  recharge_date?: string;
 }
 
 interface ConsumptionRecord {
   id: string;
+  account_id?: number;
   amount: number;
-  consumption_type: string;
+  currency?: string;
+  consumption_type?: string;
   related_id?: string;
+  reference_id?: string;
   description?: string;
-  consumption_date: string;
+  consumption_date?: string;
 }
 
 interface AccountStats {
@@ -60,19 +124,25 @@ interface AccountStats {
 }
 
 const Accounts: React.FC = () => {
+  const access = useAccess();
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [addModalVisible, setAddModalVisible] = useState(false);
+  const [shops, setShops] = useState<ShopItem[]>([]);
   const [rechargeModalVisible, setRechargeModalVisible] = useState(false);
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
-  const [currentAccount, setCurrentAccount] = useState<AccountItem | null>(null);
+  const [currentAccount, setCurrentAccount] = useState<AccountItem | null>(
+    null,
+  );
   const [accountStats, setAccountStats] = useState<AccountStats>({
     total_balance: 0,
     total_accounts: 0,
     month_recharge: 0,
-    month_consumption: 0
+    month_consumption: 0,
   });
   const [rechargeRecords, setRechargeRecords] = useState<RechargeRecord[]>([]);
-  const [consumptionRecords, setConsumptionRecords] = useState<ConsumptionRecord[]>([]);
+  const [consumptionRecords, setConsumptionRecords] = useState<
+    ConsumptionRecord[]
+  >([]);
   const [dateRange, setDateRange] = useState<any>(() => {
     // 默认设置为当前月份的北京时间范围
     const now = dayjs().tz('Asia/Shanghai');
@@ -80,32 +150,56 @@ const Accounts: React.FC = () => {
     const endOfMonth = now.endOf('month');
     return [startOfMonth, endOfMonth];
   });
-  const [loading, setLoading] = useState(false);
-  
+  const [accountDateRange, setAccountDateRange] = useState<
+    [dayjs.Dayjs, dayjs.Dayjs] | null
+  >(null);
+  const [_loading, setLoading] = useState(false);
+
   // 汇率相关状态
   const [selectedCurrency, setSelectedCurrency] = useState('CNY');
   const [originalAmount, setOriginalAmount] = useState<number>(0);
   const [convertedAmount, setConvertedAmount] = useState<number>(0);
   const [exchangeRate, setExchangeRate] = useState<number>(1);
   const [convertLoading, setConvertLoading] = useState(false);
-  
+
   // 充值相关汇率状态
   const [rechargeCurrency, setRechargeCurrency] = useState('CNY');
-  const [rechargeOriginalAmount, setRechargeOriginalAmount] = useState<number>(0);
-  const [rechargeConvertedAmount, setRechargeConvertedAmount] = useState<number>(0);
+  const [rechargeOriginalAmount, setRechargeOriginalAmount] =
+    useState<number>(0);
+  const [rechargeConvertedAmount, setRechargeConvertedAmount] =
+    useState<number>(0);
   const [rechargeExchangeRate, setRechargeExchangeRate] = useState<number>(1);
   const [rechargeConvertLoading, setRechargeConvertLoading] = useState(false);
-  
+
   // 防抖定时器
-  const [debounceTimer, setDebounceTimer] = useState<NodeJS.Timeout | null>(null);
-  const [rechargeDebounceTimer, setRechargeDebounceTimer] = useState<NodeJS.Timeout | null>(null);
-  
+  const [debounceTimer, setDebounceTimer] = useState<NodeJS.Timeout | null>(
+    null,
+  );
+  const [rechargeDebounceTimer, setRechargeDebounceTimer] =
+    useState<NodeJS.Timeout | null>(null);
+
   const actionRef = useRef<ActionType>(null);
   const [addForm] = Form.useForm();
   const [rechargeForm] = Form.useForm();
 
+  useEffect(() => {
+    listShops().then((response) => {
+      if (response.success) setShops(response.data || []);
+    }).catch(() => message.error('店铺列表加载失败'));
+  }, []);
+
+  useEffect(() => {
+    if (!addModalVisible) return;
+    const selected = getSelectedShopId();
+    const defaultShopId = selected !== ALL_SHOPS ? Number(selected) : shops.length === 1 ? shops[0].id : undefined;
+    addForm.setFieldValue('shop_id', defaultShopId);
+  }, [addModalVisible, shops, addForm]);
+
   // 汇率转换函数
-  const handleCurrencyConvert = async (amount: number, fromCurrency: string) => {
+  const handleCurrencyConvert = async (
+    amount: number,
+    fromCurrency: string,
+  ) => {
     if (fromCurrency === 'CNY' || amount === 0) {
       setConvertedAmount(amount);
       setExchangeRate(1);
@@ -117,7 +211,7 @@ const Accounts: React.FC = () => {
       const result = await convertCurrency({
         amount,
         from_currency: fromCurrency,
-        to_currency: 'CNY'
+        to_currency: 'CNY',
       });
 
       if (result.success && result.data) {
@@ -139,22 +233,28 @@ const Accounts: React.FC = () => {
   };
 
   // 防抖版本的汇率转换函数
-  const debouncedCurrencyConvert = useCallback((amount: number, fromCurrency: string) => {
-    // 清除之前的定时器
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-    
-    // 设置新的定时器，500ms后执行汇率转换
-    const timer = setTimeout(() => {
-      handleCurrencyConvert(amount, fromCurrency);
-    }, 500);
-    
-    setDebounceTimer(timer);
-  }, [debounceTimer]);
+  const debouncedCurrencyConvert = useCallback(
+    (amount: number, fromCurrency: string) => {
+      // 清除之前的定时器
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+
+      // 设置新的定时器，500ms后执行汇率转换
+      const timer = setTimeout(() => {
+        handleCurrencyConvert(amount, fromCurrency);
+      }, 500);
+
+      setDebounceTimer(timer);
+    },
+    [debounceTimer],
+  );
 
   // 充值汇率转换函数
-  const handleRechargeCurrencyConvert = async (amount: number, fromCurrency: string) => {
+  const handleRechargeCurrencyConvert = async (
+    amount: number,
+    fromCurrency: string,
+  ) => {
     if (fromCurrency === 'CNY' || amount === 0) {
       setRechargeConvertedAmount(amount);
       setRechargeExchangeRate(1);
@@ -166,7 +266,7 @@ const Accounts: React.FC = () => {
       const result = await convertCurrency({
         amount,
         from_currency: fromCurrency,
-        to_currency: 'CNY'
+        to_currency: 'CNY',
       });
 
       if (result.success && result.data) {
@@ -188,41 +288,37 @@ const Accounts: React.FC = () => {
   };
 
   // 防抖版本的充值汇率转换函数
-  const debouncedRechargeCurrencyConvert = useCallback((amount: number, fromCurrency: string) => {
-    // 清除之前的定时器
-    if (rechargeDebounceTimer) {
-      clearTimeout(rechargeDebounceTimer);
-    }
-    
-    // 设置新的定时器，500ms后执行汇率转换
-    const timer = setTimeout(() => {
-      handleRechargeCurrencyConvert(amount, fromCurrency);
-    }, 500);
-    
-    setRechargeDebounceTimer(timer);
-  }, [rechargeDebounceTimer]);
+  const debouncedRechargeCurrencyConvert = useCallback(
+    (amount: number, fromCurrency: string) => {
+      // 清除之前的定时器
+      if (rechargeDebounceTimer) {
+        clearTimeout(rechargeDebounceTimer);
+      }
+
+      // 设置新的定时器，500ms后执行汇率转换
+      const timer = setTimeout(() => {
+        handleRechargeCurrencyConvert(amount, fromCurrency);
+      }, 500);
+
+      setRechargeDebounceTimer(timer);
+    },
+    [rechargeDebounceTimer],
+  );
 
   // 加载账户统计数据
   const loadAccountStats = async () => {
     try {
-      const params: any = {};
-      
+      const params: Record<string, unknown> = {};
+
       // 如果有日期范围，添加到参数中
-      if (dateRange && dateRange[0] && dateRange[1]) {
-        // 将北京时间的日期范围转换为UTC时间
-        const utcRange = convertDateRangeToUTC(
-          dateRange[0].format('YYYY-MM-DD'),
-          dateRange[1].format('YYYY-MM-DD')
-        );
-        params.start_date = utcRange.start;
-        params.end_date = utcRange.end;
+      if (dateRange?.[0] && dateRange[1]) {
+        // 接口接收北京时间业务日期，充值时间的 UTC 边界由后端换算。
+        params.start_date = dateRange[0].format('YYYY-MM-DD');
+        params.end_date = dateRange[1].format('YYYY-MM-DD');
       }
-      
-      const response = await request('/api/accounts/summary', {
-        method: 'GET',
-        params,
-      });
-      
+
+      const response = await getAccountSummary(params);
+
       if (response.success) {
         setAccountStats(response.data);
       }
@@ -232,23 +328,15 @@ const Accounts: React.FC = () => {
   };
 
   // 获取账户列表
-  const getAccounts = async (params: any) => {
+  const getAccounts = async (params: Record<string, unknown>) => {
     try {
-      if (dateRange && dateRange[0] && dateRange[1]) {
-        // 将北京时间的日期范围转换为UTC时间
-        const utcRange = convertDateRangeToUTC(
-          dateRange[0].format('YYYY-MM-DD'),
-          dateRange[1].format('YYYY-MM-DD')
-        );
-        params.start_date = utcRange.start;
-        params.end_date = utcRange.end;
+      if (accountDateRange?.[0] && accountDateRange[1]) {
+        params.start_date = accountDateRange[0].format('YYYY-MM-DD');
+        params.end_date = accountDateRange[1].format('YYYY-MM-DD');
       }
-      
-      const response = await request('/api/accounts', {
-        method: 'GET',
-        params,
-      });
-      
+
+      const response = await fetchAccounts(params);
+
       if (response.success) {
         return {
           data: response.data || [],
@@ -256,7 +344,7 @@ const Accounts: React.FC = () => {
           total: response.pagination?.total || 0,
         };
       }
-      
+
       return {
         data: [],
         success: false,
@@ -273,22 +361,27 @@ const Accounts: React.FC = () => {
   };
 
   // 添加账户
-  const handleAddAccount = async (values: any) => {
+  const handleAddAccount = async (values: {
+    shop_id: number;
+    platform: string;
+    account_name: string;
+    account_id?: string;
+    description?: string;
+    status?: string;
+  }) => {
     try {
       const accountData = {
         ...values,
+        status: (values.status || 'active') as AccountItem['status'],
         currency: selectedCurrency,
         original_amount: originalAmount,
         original_currency: selectedCurrency,
         balance: selectedCurrency === 'CNY' ? originalAmount : convertedAmount,
-        exchange_rate: exchangeRate
+        exchange_rate: exchangeRate,
       };
-      
-      const response = await request('/api/accounts', {
-        method: 'POST',
-        data: accountData,
-      });
-      
+
+      const response = await createAccount(accountData);
+
       if (response.success) {
         message.success('账户添加成功');
         setAddModalVisible(false);
@@ -309,26 +402,26 @@ const Accounts: React.FC = () => {
   };
 
   // 充值
-  const handleRecharge = async (values: any) => {
+  const handleRecharge = async (values: Record<string, unknown>) => {
     if (!currentAccount) return;
-    
+
     try {
       const rechargeData = {
         ...values,
-        amount: rechargeCurrency === 'CNY' ? rechargeOriginalAmount : rechargeConvertedAmount,
+        amount:
+          rechargeCurrency === 'CNY'
+            ? rechargeOriginalAmount
+            : rechargeConvertedAmount,
         original_amount: rechargeOriginalAmount,
         original_currency: rechargeCurrency,
-        exchange_rate: rechargeExchangeRate
+        exchange_rate: rechargeExchangeRate,
       };
-      
-      const response = await request('/api/accounts/recharge', {
-        method: 'POST',
-        data: {
-          ...rechargeData,
-          account_id: currentAccount.id
-        },
+
+      const response = await rechargeAccount({
+        ...rechargeData,
+        account_id: Number(currentAccount.id),
       });
-      
+
       if (response.success) {
         message.success('充值成功');
         setRechargeModalVisible(false);
@@ -352,12 +445,11 @@ const Accounts: React.FC = () => {
   const toggleAccountStatus = async (account: AccountItem) => {
     try {
       const newStatus = account.status === 'active' ? 'inactive' : 'active';
-      
-      const response = await request(`/api/accounts/${account.id}`, {
-        method: 'PUT',
-        data: { status: newStatus },
+
+      const response = await updateAccount(String(account.id), {
+        status: newStatus,
       });
-      
+
       if (response.success) {
         message.success(`账户已${newStatus === 'active' ? '激活' : '停用'}`);
         actionRef.current?.reload();
@@ -376,24 +468,32 @@ const Accounts: React.FC = () => {
     setCurrentAccount(account);
     setHistoryModalVisible(true);
     setLoading(true);
-    
+
     try {
       // 获取充值记录
-      const rechargeResponse = await request(`/api/accounts/${account.id}/recharges`, {
-        method: 'GET',
-      });
-      
+      const rechargeResponse = await getAccountRecharges(Number(account.id));
+
       if (rechargeResponse.success) {
-        setRechargeRecords(rechargeResponse.recharges || []);
+        setRechargeRecords(
+          (rechargeResponse.recharges || []).map((item) => ({
+            ...item,
+            id: String(item.id),
+          })),
+        );
       }
-      
+
       // 获取消费记录
-      const consumptionResponse = await request(`/api/accounts/${account.id}/consumptions`, {
-        method: 'GET',
-      });
-      
+      const consumptionResponse = await getAccountConsumptions(
+        Number(account.id),
+      );
+
       if (consumptionResponse.success) {
-        setConsumptionRecords(consumptionResponse.consumptions || []);
+        setConsumptionRecords(
+          (consumptionResponse.consumptions || []).map((item) => ({
+            ...item,
+            id: String(item.id),
+          })),
+        );
       }
     } catch (error) {
       console.error('获取账户历史失败:', error);
@@ -405,6 +505,7 @@ const Accounts: React.FC = () => {
 
   // 删除账户
   const handleDelete = async (account: AccountItem) => {
+    if (!access.canAdmin) return;
     Modal.confirm({
       title: '确认删除',
       icon: <ExclamationCircleOutlined />,
@@ -413,15 +514,16 @@ const Accounts: React.FC = () => {
       cancelText: '取消',
       onOk: async () => {
         try {
-          const response = await fetch(`/api/accounts/${account.id}?token=123`, {
+          const response = await fetch(`/api/accounts/${account.id}`, {
             method: 'DELETE',
             headers: {
               'Content-Type': 'application/json',
+              Authorization: `Bearer ${getToken()}`,
             },
           });
-          
+
           const data = await response.json();
-          
+
           if (response.ok && data.success) {
             message.success('账户删除成功');
             actionRef.current?.reload();
@@ -449,15 +551,19 @@ const Accounts: React.FC = () => {
               cancelText: '取消',
               onOk: async () => {
                 try {
-                  const forceResponse = await fetch(`/api/accounts/${account.id}?token=123&force=true`, {
-                    method: 'DELETE',
-                    headers: {
-                      'Content-Type': 'application/json',
+                  const forceResponse = await fetch(
+                    `/api/accounts/${account.id}?force=true`,
+                    {
+                      method: 'DELETE',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${getToken()}`,
+                      },
                     },
-                  });
-                  
+                  );
+
                   const forceData = await forceResponse.json();
-                  
+
                   if (forceResponse.ok && forceData.success) {
                     message.success('账户删除成功');
                     actionRef.current?.reload();
@@ -474,7 +580,7 @@ const Accounts: React.FC = () => {
           } else {
             message.error(data.message || '删除失败');
           }
-        } catch (error: any) {
+        } catch (error) {
           console.error('删除账户失败:', error);
           message.error('删除失败');
         }
@@ -485,6 +591,10 @@ const Accounts: React.FC = () => {
   useEffect(() => {
     loadAccountStats();
   }, [dateRange]);
+
+  useEffect(() => {
+    actionRef.current?.reload();
+  }, [accountDateRange]);
 
   // 清理定时器
   useEffect(() => {
@@ -503,7 +613,7 @@ const Accounts: React.FC = () => {
       title: '账户名称',
       dataIndex: 'account_name',
       key: 'account_name',
-      width: 150,
+      width: 140,
       ellipsis: true,
     },
     {
@@ -517,7 +627,7 @@ const Accounts: React.FC = () => {
       title: '账户ID',
       dataIndex: 'account_id',
       key: 'account_id',
-      width: 150,
+      width: 140,
       ellipsis: true,
       hideInSearch: true,
     },
@@ -528,13 +638,20 @@ const Accounts: React.FC = () => {
       width: 120,
       hideInSearch: true,
       render: (_, record) => {
-         const displayBalance = formatCurrency(record.balance, 'CNY');
-         const originalDisplay = record.original_currency && record.original_currency !== 'CNY' 
-           ? `(${formatCurrency(record.original_amount || 0, record.original_currency || 'USD')})` 
-           : '';
-        
+        const displayBalance = formatCurrency(record.balance, 'CNY');
+        const originalDisplay =
+          record.original_currency && record.original_currency !== 'CNY'
+            ? `(${formatCurrency(record.original_amount || 0, record.original_currency || 'USD')})`
+            : '';
+
         return (
-          <Tooltip title={originalDisplay ? `原始金额: ${formatCurrency(record.original_amount || 0, record.original_currency || 'USD')}` : undefined}>
+          <Tooltip
+            title={
+              originalDisplay
+                ? `原始金额: ${formatCurrency(record.original_amount || 0, record.original_currency || 'USD')}`
+                : undefined
+            }
+          >
             <div>
               <div>{displayBalance}</div>
               {originalDisplay && (
@@ -572,7 +689,8 @@ const Accounts: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 180,
+      // 北京时间是「YYYY-MM-DD HH:mm:ss」，窄了会折成两行
+      width: 185,
       valueType: 'dateRange',
       hideInSearch: true,
       render: (_, record) => formatBeijingTime(record.created_at),
@@ -581,7 +699,8 @@ const Accounts: React.FC = () => {
       title: '操作',
       valueType: 'option',
       key: 'option',
-      width: 280,
+      // 4 个文字按钮（充值/历史/停用/删除）排一行需要这么宽，窄了会折成两行
+      width: 260,
       fixed: 'right',
       render: (_, record) => (
         <Space size="small" wrap>
@@ -614,7 +733,7 @@ const Accounts: React.FC = () => {
           >
             {record.status === 'active' ? '停用' : '激活'}
           </Button>
-          <Button
+          {access.canAdmin && <Button
             key="delete"
             type="link"
             size="small"
@@ -622,19 +741,24 @@ const Accounts: React.FC = () => {
             onClick={() => handleDelete(record)}
           >
             删除
-          </Button>
+          </Button>}
         </Space>
       ),
     },
   ];
 
   return (
-    <PageContainer>
+    <PageContainer
+      header={{
+        title: '资金账户',
+        subTitle: '维护各平台的收款账户余额，记录每笔充值与消耗',
+      }}
+    >
       {/* 日期范围选择器 */}
       <Row style={{ marginBottom: 16 }}>
         <Col span={24}>
           <Card>
-            <Space align="center">
+            <Space align="center" wrap>
               <span>统计时间范围：</span>
               <RangePicker
                 value={dateRange}
@@ -643,8 +767,8 @@ const Accounts: React.FC = () => {
                 allowClear
                 style={{ width: 300 }}
               />
-              <Button 
-                type="link" 
+              <Button
+                type="link"
                 onClick={() => {
                   const now = dayjs().tz('Asia/Shanghai');
                   const startOfMonth = now.startOf('month');
@@ -659,10 +783,10 @@ const Accounts: React.FC = () => {
           </Card>
         </Col>
       </Row>
-      
+
       {/* 统计卡片 */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
               title="总余额"
@@ -673,7 +797,7 @@ const Accounts: React.FC = () => {
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
               title="账户总数"
@@ -682,10 +806,10 @@ const Accounts: React.FC = () => {
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title={dateRange ? "选定期间充值" : "本月充值"}
+              title={dateRange ? '选定期间充值' : '本月充值'}
               value={accountStats.month_recharge}
               precision={2}
               prefix="¥"
@@ -693,10 +817,10 @@ const Accounts: React.FC = () => {
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title={dateRange ? "选定期间消费" : "本月消费"}
+              title={dateRange ? '选定期间消费' : '本月消费'}
               value={accountStats.month_consumption}
               precision={2}
               prefix="¥"
@@ -713,23 +837,24 @@ const Accounts: React.FC = () => {
         search={{
           labelWidth: 'auto',
         }}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1080 }}
         toolBarRender={() => [
           <RangePicker
-            key="dateRange"
-            value={dateRange}
-            onChange={setDateRange}
-            placeholder={['开始日期', '结束日期']}
+            key="accountDateRange"
+            value={accountDateRange}
+            onChange={(dates) => setAccountDateRange(dates as [dayjs.Dayjs, dayjs.Dayjs] | null)}
+            placeholder={['创建开始日期', '创建结束日期']}
           />,
           <Button
             key="refresh"
-            icon={<ReloadOutlined />}
+            icon={<ClearOutlined />}
+            disabled={!accountDateRange}
+            title="只清除上面的创建日期筛选，不影响「筛选」表单里的条件"
             onClick={() => {
-              setDateRange(null);
-              actionRef.current?.reload();
+              setAccountDateRange(null);
             }}
           >
-            重置
+            重置日期
           </Button>,
           <Button
             type="primary"
@@ -743,6 +868,10 @@ const Accounts: React.FC = () => {
           </Button>,
         ]}
         request={getAccounts}
+        pagination={{
+          ...persistedPagination('accounts', 10),
+          showSizeChanger: true,
+        }}
         columns={columns}
         rowSelection={{
           selectedRowKeys,
@@ -765,11 +894,10 @@ const Accounts: React.FC = () => {
         footer={null}
         width={600}
       >
-        <Form
-          form={addForm}
-          layout="vertical"
-          onFinish={handleAddAccount}
-        >
+        <Form form={addForm} layout="vertical" onFinish={handleAddAccount}>
+          <Form.Item name="shop_id" label="所属店铺" rules={[{ required: true, message: '请选择所属店铺' }]}>
+            <Select placeholder="请选择所属店铺" options={shops.map((shop) => ({ label: shop.name, value: shop.id }))} />
+          </Form.Item>
           <Form.Item
             name="account_name"
             label="账户名称"
@@ -777,7 +905,7 @@ const Accounts: React.FC = () => {
           >
             <Input placeholder="请输入账户名称" />
           </Form.Item>
-          
+
           <Form.Item
             name="platform"
             label="平台"
@@ -785,28 +913,19 @@ const Accounts: React.FC = () => {
           >
             <Input placeholder="请输入平台名称" />
           </Form.Item>
-          
-          <Form.Item
-            name="account_id"
-            label="账户ID"
-          >
+
+          <Form.Item name="account_id" label="账户ID">
             <Input placeholder="请输入账户ID（可选）" />
           </Form.Item>
-          
-          <Form.Item
-            name="description"
-            label="描述"
-          >
+
+          <Form.Item name="description" label="描述">
             <TextArea rows={3} placeholder="请输入账户描述（可选）" />
           </Form.Item>
-          
+
           {/* 货币和金额输入 */}
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item
-                label="货币类型"
-                required
-              >
+              <Form.Item label="货币类型" required>
                 <Select
                   value={selectedCurrency}
                   onChange={(value) => {
@@ -818,7 +937,7 @@ const Accounts: React.FC = () => {
                   style={{ width: '100%' }}
                   placeholder="选择货币"
                 >
-                  {getCurrencyOptions().map(option => (
+                  {getCurrencyOptions().map((option) => (
                     <Option key={option.value} value={option.value}>
                       {option.label}
                     </Option>
@@ -827,10 +946,7 @@ const Accounts: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={16}>
-              <Form.Item
-                label="初始金额"
-                required
-              >
+              <Form.Item label="初始金额" required>
                 <InputNumber
                   style={{ width: '100%' }}
                   min={0}
@@ -842,26 +958,28 @@ const Accounts: React.FC = () => {
                     setOriginalAmount(amount);
                     debouncedCurrencyConvert(amount, selectedCurrency);
                   }}
-                  addonBefore={SUPPORTED_CURRENCIES[selectedCurrency as keyof typeof SUPPORTED_CURRENCIES]?.symbol || selectedCurrency}
-                  suffix={
-                    convertLoading ? (
-                      <SyncOutlined spin />
-                    ) : null
+                  addonBefore={
+                    SUPPORTED_CURRENCIES[
+                      selectedCurrency as keyof typeof SUPPORTED_CURRENCIES
+                    ]?.symbol || selectedCurrency
                   }
+                  suffix={convertLoading ? <SyncOutlined spin /> : null}
                 />
               </Form.Item>
             </Col>
           </Row>
-          
+
           {/* 汇率转换显示 */}
           {selectedCurrency !== 'CNY' && originalAmount > 0 && (
             <Form.Item label="转换为人民币">
-              <div style={{ 
-                padding: '8px 12px', 
-                backgroundColor: '#f5f5f5', 
-                borderRadius: '6px',
-                border: '1px solid #d9d9d9'
-              }}>
+              <div
+                style={{
+                  padding: '8px 12px',
+                  backgroundColor: '#f5f5f5',
+                  borderRadius: '6px',
+                  border: '1px solid #d9d9d9',
+                }}
+              >
                 <Space direction="vertical" size={4} style={{ width: '100%' }}>
                   <div>
                     <strong>原始金额：</strong>
@@ -869,7 +987,13 @@ const Accounts: React.FC = () => {
                   </div>
                   <div>
                     <strong>人民币金额：</strong>
-                    <span style={{ color: '#1890ff', fontSize: '16px', fontWeight: 'bold' }}>
+                    <span
+                      style={{
+                        color: '#1890ff',
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                      }}
+                    >
                       {formatCurrency(convertedAmount, 'CNY')}
                     </span>
                   </div>
@@ -880,20 +1004,22 @@ const Accounts: React.FC = () => {
               </div>
             </Form.Item>
           )}
-          
+
           <Form.Item>
             <Space>
               <Button type="primary" htmlType="submit">
                 确定
               </Button>
-              <Button onClick={() => {
-                setAddModalVisible(false);
-                addForm.resetFields();
-                setSelectedCurrency('CNY');
-                setOriginalAmount(0);
-                setConvertedAmount(0);
-                setExchangeRate(1);
-              }}>
+              <Button
+                onClick={() => {
+                  setAddModalVisible(false);
+                  addForm.resetFields();
+                  setSelectedCurrency('CNY');
+                  setOriginalAmount(0);
+                  setConvertedAmount(0);
+                  setExchangeRate(1);
+                }}
+              >
                 取消
               </Button>
             </Space>
@@ -916,30 +1042,29 @@ const Accounts: React.FC = () => {
         footer={null}
         width={500}
       >
-        <Form
-          form={rechargeForm}
-          layout="vertical"
-          onFinish={handleRecharge}
-        >
+        <Form form={rechargeForm} layout="vertical" onFinish={handleRecharge}>
           <Form.Item label="充值货币类型">
             <Select
               value={rechargeCurrency}
               onChange={(value) => {
                 setRechargeCurrency(value);
                 if (rechargeOriginalAmount > 0) {
-                  debouncedRechargeCurrencyConvert(rechargeOriginalAmount, value);
+                  debouncedRechargeCurrencyConvert(
+                    rechargeOriginalAmount,
+                    value,
+                  );
                 }
               }}
               style={{ width: '100%' }}
             >
-              {getCurrencyOptions().map(option => (
+              {getCurrencyOptions().map((option) => (
                 <Option key={option.value} value={option.value}>
                   {option.label}
                 </Option>
               ))}
             </Select>
           </Form.Item>
-          
+
           <Form.Item
             name="amount"
             label="充值金额"
@@ -950,8 +1075,10 @@ const Accounts: React.FC = () => {
               min={0.01}
               precision={2}
               placeholder="0.00"
-              addonBefore={(SUPPORTED_CURRENCIES as any)[rechargeCurrency]?.symbol || '¥'}
-              suffix={rechargeConvertLoading ? <SyncOutlined spin /> : undefined}
+              addonBefore={currencySymbol(rechargeCurrency)}
+              suffix={
+                rechargeConvertLoading ? <SyncOutlined spin /> : undefined
+              }
               onChange={(value) => {
                 const amount = value || 0;
                 setRechargeOriginalAmount(amount);
@@ -959,19 +1086,31 @@ const Accounts: React.FC = () => {
               }}
             />
           </Form.Item>
-          
+
           {rechargeCurrency !== 'CNY' && rechargeOriginalAmount > 0 && (
-            <div style={{ marginBottom: 16, padding: 12, backgroundColor: '#f6f6f6', borderRadius: 6 }}>
-              <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>转换为人民币:</div>
-              <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1890ff' }}>
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: '#f6f6f6',
+                borderRadius: 6,
+              }}
+            >
+              <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>
+                转换为人民币:
+              </div>
+              <div
+                style={{ fontSize: 16, fontWeight: 'bold', color: '#1890ff' }}
+              >
                 ¥ {formatCurrency(rechargeConvertedAmount, 'CNY')}
               </div>
               <div style={{ fontSize: 12, color: '#999' }}>
-                汇率: 1 {rechargeCurrency} = {rechargeExchangeRate.toFixed(4)} CNY
+                汇率: 1 {rechargeCurrency} = {rechargeExchangeRate.toFixed(4)}{' '}
+                CNY
               </div>
             </div>
           )}
-          
+
           <Form.Item
             name="recharge_method"
             label="充值方式"
@@ -985,34 +1124,30 @@ const Accounts: React.FC = () => {
               <Option value="other">其他</Option>
             </Select>
           </Form.Item>
-          
-          <Form.Item
-            name="transaction_id"
-            label="交易ID"
-          >
+
+          <Form.Item name="transaction_id" label="交易ID">
             <Input placeholder="请输入交易ID（可选）" />
           </Form.Item>
-          
-          <Form.Item
-            name="description"
-            label="备注"
-          >
+
+          <Form.Item name="description" label="备注">
             <TextArea rows={3} placeholder="请输入备注（可选）" />
           </Form.Item>
-          
+
           <Form.Item>
             <Space>
               <Button type="primary" htmlType="submit">
                 确定充值
               </Button>
-              <Button onClick={() => {
-                setRechargeModalVisible(false);
-                rechargeForm.resetFields();
-                setRechargeCurrency('CNY');
-                setRechargeOriginalAmount(0);
-                setRechargeConvertedAmount(0);
-                setRechargeExchangeRate(1);
-              }}>
+              <Button
+                onClick={() => {
+                  setRechargeModalVisible(false);
+                  rechargeForm.resetFields();
+                  setRechargeCurrency('CNY');
+                  setRechargeOriginalAmount(0);
+                  setRechargeConvertedAmount(0);
+                  setRechargeExchangeRate(1);
+                }}
+              >
                 取消
               </Button>
             </Space>
@@ -1042,13 +1177,30 @@ const Accounts: React.FC = () => {
                       <strong>方式:</strong> {record.recharge_method}
                     </Col>
                     <Col span={6}>
-                      <strong>状态:</strong> 
-                      <Tag color={record.status === 'completed' || record.status === 'confirmed' ? 'green' : record.status === 'pending' ? 'orange' : 'red'}>
-                        {record.status === 'completed' || record.status === 'confirmed' ? '已完成' : record.status === 'pending' ? '待确认' : record.status === 'failed' ? '失败' : '已取消'}
+                      <strong>状态:</strong>
+                      <Tag
+                        color={
+                          record.status === 'completed' ||
+                          record.status === 'confirmed'
+                            ? 'green'
+                            : record.status === 'pending'
+                              ? 'orange'
+                              : 'red'
+                        }
+                      >
+                        {record.status === 'completed' ||
+                        record.status === 'confirmed'
+                          ? '已完成'
+                          : record.status === 'pending'
+                            ? '待确认'
+                            : record.status === 'failed'
+                              ? '失败'
+                              : '已取消'}
                       </Tag>
                     </Col>
                     <Col span={6}>
-                      <strong>时间:</strong> {formatShortBeijingTime(record.recharge_date)}
+                      <strong>时间:</strong>{' '}
+                      {formatShortBeijingTime(record.recharge_date || '')}
                     </Col>
                   </Row>
                   {record.description && (
@@ -1060,9 +1212,13 @@ const Accounts: React.FC = () => {
               ))}
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: '#999', marginBottom: 24 }}>暂无充值记录</div>
+            <div
+              style={{ textAlign: 'center', color: '#999', marginBottom: 24 }}
+            >
+              暂无充值记录
+            </div>
           )}
-          
+
           <h4>消费记录</h4>
           {consumptionRecords.length > 0 ? (
             <div>
@@ -1079,7 +1235,7 @@ const Accounts: React.FC = () => {
                       <strong>关联ID:</strong> {record.related_id || '-'}
                     </Col>
                     <Col span={6}>
-                      <strong>时间:</strong> {formatShortBeijingTime(record.consumption_date)}
+                      <strong>日期:</strong> {record.consumption_date || '-'}
                     </Col>
                   </Row>
                   {record.description && (
@@ -1091,7 +1247,9 @@ const Accounts: React.FC = () => {
               ))}
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: '#999' }}>暂无消费记录</div>
+            <div style={{ textAlign: 'center', color: '#999' }}>
+              暂无消费记录
+            </div>
           )}
         </div>
       </Modal>

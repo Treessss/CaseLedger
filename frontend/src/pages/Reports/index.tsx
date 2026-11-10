@@ -1,36 +1,52 @@
-import { PageContainer } from '@ant-design/pro-components';
-import { Card, Col, Row, DatePicker, Select, Button, Table, Divider, Spin, message } from 'antd';
 import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
-import React, { useState, useEffect, useRef } from 'react';
+import { PageContainer } from '@ant-design/pro-components';
+import {
+  Button,
+  Card,
+  Col,
+  DatePicker,
+  Divider,
+  message,
+  Row,
+  Select,
+  Spin,
+  Table,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { getFinancialReport, exportReport, type FinancialData, type ReportParams } from '@/services/reports';
 import dayjs, { type Dayjs } from 'dayjs';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  exportReport,
+  type FinancialData,
+  getFinancialReport,
+  type ReportParams,
+} from '@/services/reports';
+import { getCurrentBeijingTime } from '@/utils/timezone';
 
 const { RangePicker } = DatePicker;
 const { Option } = Select;
 
-
-
 const Reports: React.FC = () => {
   const getDefaultRangeByType = (type: string): [Dayjs, Dayjs] => {
-    const end = dayjs().endOf('day');
+    const today = dayjs(getCurrentBeijingTime('YYYY-MM-DD'));
+    const end = today.endOf('day');
     if (type === 'daily') {
-      // 日报默认当前整月
-      return [dayjs().startOf('month'), dayjs().endOf('month')];
+      // 日报默认本月截至北京时间今天，不显示尚未发生的日期。
+      return [today.startOf('month'), end];
     }
     if (type === 'weekly') {
       // 周报默认当前月份
-      return [dayjs().startOf('month'), end];
+      return [today.startOf('month'), end];
     }
     if (type === 'monthly') {
       // 当前月 + 前5个月（近半年）
-      return [dayjs().startOf('month').subtract(5, 'month'), end];
+      return [today.startOf('month').subtract(5, 'month'), end];
     }
     if (type === 'quarterly' || type === 'yearly') {
       // 季报/年报默认当年
-      return [dayjs().startOf('year'), end];
+      return [today.startOf('year'), end];
     }
-    return [dayjs().subtract(30, 'day').startOf('day'), end];
+    return [today.subtract(30, 'day').startOf('day'), end];
   };
 
   const [reportType, setReportType] = useState<string>('monthly');
@@ -52,14 +68,16 @@ const Reports: React.FC = () => {
       title: '收入 (¥)',
       dataIndex: 'income',
       key: 'income',
-      render: (value: number) => value.toLocaleString('zh-CN', { minimumFractionDigits: 2 }),
+      render: (value: number) =>
+        value.toLocaleString('zh-CN', { minimumFractionDigits: 2 }),
       align: 'right',
     },
     {
       title: '支出 (¥)',
       dataIndex: 'expense',
       key: 'expense',
-      render: (value: number) => value.toLocaleString('zh-CN', { minimumFractionDigits: 2 }),
+      render: (value: number) =>
+        value.toLocaleString('zh-CN', { minimumFractionDigits: 2 }),
       align: 'right',
     },
     {
@@ -89,7 +107,7 @@ const Reports: React.FC = () => {
         start_date: dateRange?.[0]?.format('YYYY-MM-DD'),
         end_date: dateRange?.[1]?.format('YYYY-MM-DD'),
       };
-      
+
       const response = await getFinancialReport(params);
       // 只接受最新请求的返回，避免旧请求覆盖最新筛选结果
       if (requestSeq !== requestSeqRef.current) return;
@@ -117,19 +135,22 @@ const Reports: React.FC = () => {
         end_date: dateRange?.[1]?.format('YYYY-MM-DD'),
         format,
       };
-      
+
       const response = await exportReport(params);
-      
+
       // 创建下载链接
       const url = window.URL.createObjectURL(new Blob([response]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `财务报表_${dayjs().format('YYYY-MM-DD')}.${format === 'excel' ? 'xlsx' : 'pdf'}`);
+      link.setAttribute(
+        'download',
+        `财务报表_${dayjs().format('YYYY-MM-DD')}.${format === 'excel' ? 'xlsx' : 'pdf'}`,
+      );
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      
+
       message.success('导出成功');
     } catch (error) {
       message.error('导出失败');
@@ -148,13 +169,10 @@ const Reports: React.FC = () => {
   };
 
   return (
-    <PageContainer
-      title="财务报表"
-      subTitle="查看和分析财务数据"
-    >
+    <PageContainer title="财务报表" subTitle="查看和分析财务数据">
       {/* 报表筛选条件 */}
       <Card title="报表筛选" style={{ marginBottom: 16 }}>
-        <Row gutter={[16, 16]} align="middle">
+        <Row gutter={[16, 16]} align="bottom">
           <Col xs={24} sm={8} md={6}>
             <div>报表类型：</div>
             <Select
@@ -173,20 +191,20 @@ const Reports: React.FC = () => {
             </Select>
           </Col>
           <Col xs={24} sm={10} md={8}>
-            <div>时间范围：</div>
+            <div>时间范围（北京时间）：</div>
             <RangePicker
               value={dateRange}
-              onChange={setDateRange}
+              onChange={(dates) => setDateRange(dates as [Dayjs, Dayjs] | null)}
               style={{ width: '100%', marginTop: 4 }}
               placeholder={['开始日期', '结束日期']}
             />
           </Col>
-          <Col xs={24} sm={6} md={4}>
-            <Button 
-              type="primary" 
+          {/* 操作按钮贴右：筛选项靠左、动作靠右，中间不留一块看不懂的空白 */}
+          <Col xs={24} sm={6} md={10} style={{ textAlign: 'right' }}>
+            <Button
+              type="primary"
               onClick={handleGenerateReport}
-              style={{ marginTop: 20 }}
-              block
+              style={{ minWidth: 160 }}
             >
               生成报表
             </Button>
@@ -200,8 +218,13 @@ const Reports: React.FC = () => {
           <Card>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 14, color: '#666' }}>总收入</div>
-              <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>
-                ¥{(summary?.total_income || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+              <div
+                style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}
+              >
+                ¥
+                {(summary?.total_income || 0).toLocaleString('zh-CN', {
+                  minimumFractionDigits: 2,
+                })}
               </div>
             </div>
           </Card>
@@ -210,8 +233,13 @@ const Reports: React.FC = () => {
           <Card>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 14, color: '#666' }}>总支出</div>
-              <div style={{ fontSize: 24, fontWeight: 'bold', color: '#ff4d4f' }}>
-                ¥{(summary?.total_expense || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+              <div
+                style={{ fontSize: 24, fontWeight: 'bold', color: '#ff4d4f' }}
+              >
+                ¥
+                {(summary?.total_expense || 0).toLocaleString('zh-CN', {
+                  minimumFractionDigits: 2,
+                })}
               </div>
             </div>
           </Card>
@@ -220,12 +248,18 @@ const Reports: React.FC = () => {
           <Card>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 14, color: '#666' }}>净利润</div>
-              <div style={{ 
-                fontSize: 24, 
-                fontWeight: 'bold', 
-                color: (summary?.total_profit || 0) >= 0 ? '#52c41a' : '#ff4d4f' 
-              }}>
-                ¥{(summary?.total_profit || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 'bold',
+                  color:
+                    (summary?.total_profit || 0) >= 0 ? '#52c41a' : '#ff4d4f',
+                }}
+              >
+                ¥
+                {(summary?.total_profit || 0).toLocaleString('zh-CN', {
+                  minimumFractionDigits: 2,
+                })}
               </div>
             </div>
           </Card>
@@ -233,16 +267,25 @@ const Reports: React.FC = () => {
       </Row>
 
       {/* 详细报表 */}
-      <Card 
+      <Card
         title="财务明细报表"
         extra={[
           <Button key="print" icon={<PrinterOutlined />} onClick={handlePrint}>
             打印
           </Button>,
-          <Button key="export-excel" type="primary" icon={<DownloadOutlined />} onClick={() => handleExport('excel')}>
+          <Button
+            key="export-excel"
+            type="primary"
+            icon={<DownloadOutlined />}
+            onClick={() => handleExport('excel')}
+          >
             导出Excel
           </Button>,
-          <Button key="export-pdf" icon={<DownloadOutlined />} onClick={() => handleExport('pdf')}>
+          <Button
+            key="export-pdf"
+            icon={<DownloadOutlined />}
+            onClick={() => handleExport('pdf')}
+          >
             导出PDF
           </Button>,
         ]}
@@ -250,9 +293,13 @@ const Reports: React.FC = () => {
         <Spin spinning={loading}>
           <Table
             columns={columns}
-            dataSource={data.map((item, index) => ({ ...item, key: index.toString() }))}
+            dataSource={data.map((item, index) => ({
+              ...item,
+              key: index.toString(),
+            }))}
             pagination={false}
             size="middle"
+            scroll={{ x: 640 }}
             summary={() => (
               <Table.Summary>
                 <Table.Summary.Row>
@@ -260,14 +307,34 @@ const Reports: React.FC = () => {
                     <strong>总计</strong>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1}>
-                    <strong>¥{(summary?.total_income || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</strong>
+                    <strong>
+                      ¥
+                      {(summary?.total_income || 0).toLocaleString('zh-CN', {
+                        minimumFractionDigits: 2,
+                      })}
+                    </strong>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={2}>
-                    <strong>¥{(summary?.total_expense || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</strong>
+                    <strong>
+                      ¥
+                      {(summary?.total_expense || 0).toLocaleString('zh-CN', {
+                        minimumFractionDigits: 2,
+                      })}
+                    </strong>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={3}>
-                    <strong style={{ color: (summary?.total_profit || 0) >= 0 ? '#52c41a' : '#ff4d4f' }}>
-                      ¥{(summary?.total_profit || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+                    <strong
+                      style={{
+                        color:
+                          (summary?.total_profit || 0) >= 0
+                            ? '#52c41a'
+                            : '#ff4d4f',
+                      }}
+                    >
+                      ¥
+                      {(summary?.total_profit || 0).toLocaleString('zh-CN', {
+                        minimumFractionDigits: 2,
+                      })}
                     </strong>
                   </Table.Summary.Cell>
                 </Table.Summary.Row>
@@ -275,9 +342,9 @@ const Reports: React.FC = () => {
             )}
           />
         </Spin>
-        
+
         <Divider />
-        
+
         <div style={{ textAlign: 'center', color: '#666', fontSize: 12 }}>
           报表生成时间：{new Date().toLocaleString('zh-CN')}
         </div>

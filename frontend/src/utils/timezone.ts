@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
 
 // 扩展dayjs插件
 dayjs.extend(utc);
@@ -15,9 +15,12 @@ const BEIJING_TIMEZONE = 'Asia/Shanghai';
  * @param format 显示格式，默认为 'YYYY-MM-DD HH:mm:ss'
  * @returns 北京时间格式化字符串
  */
-export const formatBeijingTime = (utcTime: string | Date, format: string = 'YYYY-MM-DD HH:mm:ss'): string => {
+export const formatBeijingTime = (
+  utcTime: string | Date | null | undefined,
+  format: string = 'YYYY-MM-DD HH:mm:ss',
+): string => {
   if (!utcTime) return '';
-  
+
   return dayjs.utc(utcTime).tz(BEIJING_TIMEZONE).format(format);
 };
 
@@ -28,7 +31,7 @@ export const formatBeijingTime = (utcTime: string | Date, format: string = 'YYYY
  */
 export const convertBeijingToUTC = (beijingTime: string | Date): string => {
   if (!beijingTime) return '';
-  
+
   return dayjs.tz(beijingTime, BEIJING_TIMEZONE).utc().toISOString();
 };
 
@@ -37,9 +40,26 @@ export const convertBeijingToUTC = (beijingTime: string | Date): string => {
  * @param format 显示格式，默认为 'YYYY-MM-DD HH:mm:ss'
  * @returns 当前北京时间格式化字符串
  */
-export const getCurrentBeijingTime = (format: string = 'YYYY-MM-DD HH:mm:ss'): string => {
+export const getCurrentBeijingTime = (
+  format: string = 'YYYY-MM-DD HH:mm:ss',
+): string => {
   return dayjs().tz(BEIJING_TIMEZONE).format(format);
 };
+
+/** Date picker selects Beijing calendar days; API stores UTC timestamps without a timezone suffix. */
+export const beijingCalendarRangeToUTC = (
+  startDate: string,
+  endDate: string,
+) => ({
+  start_date: dayjs
+    .tz(`${startDate} 00:00:00`, BEIJING_TIMEZONE)
+    .utc()
+    .format('YYYY-MM-DD HH:mm:ss'),
+  end_date: dayjs
+    .tz(`${endDate} 23:59:59`, BEIJING_TIMEZONE)
+    .utc()
+    .format('YYYY-MM-DD HH:mm:ss'),
+});
 
 /**
  * 将北京时间的日期范围转换为UTC时间范围（用于API查询）
@@ -48,9 +68,19 @@ export const getCurrentBeijingTime = (format: string = 'YYYY-MM-DD HH:mm:ss'): s
  * @returns UTC时间范围对象
  */
 export const convertDateRangeToUTC = (startDate: string, endDate: string) => {
-  const start = startDate ? dayjs.tz(startDate + ' 00:00:00', BEIJING_TIMEZONE).utc().format('YYYY-MM-DD') : null;
-  const end = endDate ? dayjs.tz(endDate + ' 23:59:59', BEIJING_TIMEZONE).utc().format('YYYY-MM-DD') : null;
-  
+  const start = startDate
+    ? dayjs
+        .tz(`${startDate} 00:00:00`, BEIJING_TIMEZONE)
+        .utc()
+        .format('YYYY-MM-DD')
+    : null;
+  const end = endDate
+    ? dayjs
+        .tz(`${endDate} 23:59:59`, BEIJING_TIMEZONE)
+        .utc()
+        .format('YYYY-MM-DD')
+    : null;
+
   return { start, end };
 };
 
@@ -62,7 +92,7 @@ export const getCurrentMonthUTCRange = () => {
   const now = dayjs().tz(BEIJING_TIMEZONE);
   const startOfMonth = now.startOf('month').format('YYYY-MM-DD');
   const endOfMonth = now.endOf('month').format('YYYY-MM-DD');
-  
+
   return convertDateRangeToUTC(startOfMonth, endOfMonth);
 };
 
@@ -73,11 +103,11 @@ export const getCurrentMonthUTCRange = () => {
  */
 export const toBeijingTime = (date: any) => {
   if (!date) return null;
-  
+
   if (typeof date === 'string') {
     return dayjs.utc(date).tz(BEIJING_TIMEZONE);
   }
-  
+
   return dayjs(date).tz(BEIJING_TIMEZONE);
 };
 
@@ -86,6 +116,8 @@ export const toBeijingTime = (date: any) => {
  * @param utcTime UTC时间字符串或Date对象
  * @returns 简短的北京时间格式 'MM-DD HH:mm'
  */
-export const formatShortBeijingTime = (utcTime: string | Date): string => {
+export const formatShortBeijingTime = (
+  utcTime: string | Date | null | undefined,
+): string => {
   return formatBeijingTime(utcTime, 'MM-DD HH:mm');
 };

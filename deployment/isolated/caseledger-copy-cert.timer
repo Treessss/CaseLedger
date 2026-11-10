@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew CaseLedger-copy IP TLS certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:00:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=caseledger-copy-cert.service
+
+[Install]
+WantedBy=timers.target

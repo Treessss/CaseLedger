@@ -2,6 +2,7 @@ import { request } from '@umijs/max';
 
 export interface AccountItem {
   id: string;
+  shop_id?: number;
   account_name: string;
   platform: string;
   account_id?: string;
@@ -16,6 +17,8 @@ export interface AccountItem {
 export interface AccountListParams {
   current?: number;
   pageSize?: number;
+  page?: number;
+  per_page?: number;
   platform?: string;
   status?: string;
   account_name?: string;
@@ -23,11 +26,15 @@ export interface AccountListParams {
 
 export interface AccountListResponse {
   success: boolean;
-  data: {
-    accounts: AccountItem[];
-    total: number;
+  /** 账户数组（分页信息在顶层 pagination） */
+  data: AccountItem[];
+  pagination?: {
     page: number;
+    pages: number;
     per_page: number;
+    total: number;
+    has_next: boolean;
+    has_prev: boolean;
   };
   message?: string;
 }
@@ -40,9 +47,14 @@ export interface AccountDetailResponse {
 
 /** 获取账户列表 */
 export async function getAccounts(params?: AccountListParams) {
+  const { current, pageSize, ...rest } = params || {};
   return request<AccountListResponse>('/api/accounts', {
     method: 'GET',
-    params,
+    params: {
+      ...rest,
+      page: rest.page ?? current,
+      per_page: rest.per_page ?? pageSize,
+    },
   });
 }
 
@@ -95,5 +107,101 @@ export async function convertCurrency(amount: number, fromCurrency: string, toCu
       from_currency: fromCurrency,
       to_currency: toCurrency,
     },
+  });
+}
+
+export interface AccountSummary {
+  total_accounts: number;
+  total_balance: number;
+  month_recharge: number;
+  month_consumption: number;
+  platform_summary: Record<
+    string,
+    {
+      count: number;
+      total_balance: number;
+      accounts: Array<{ id: number; account_name: string; balance: number }>;
+    }
+  >;
+}
+
+export interface RechargeItem {
+  id: number;
+  account_id: number;
+  account_name?: string;
+  amount: number;
+  currency?: string;
+  recharge_method?: string;
+  description?: string;
+  status?: string;
+  recharge_date?: string;
+}
+
+export interface ConsumptionItem {
+  id: number;
+  account_id: number;
+  amount: number;
+  currency?: string;
+  consumption_type?: string;
+  description?: string;
+  consumption_date?: string;
+}
+
+/** 账户汇总（余额、本月充值/消耗、按平台分组） */
+export async function getAccountSummary(params?: {
+  platform?: string;
+  start_date?: string;
+  end_date?: string;
+}) {
+  return request<{ success: boolean; data: AccountSummary }>('/api/accounts/summary', {
+    method: 'GET',
+    params: params || {},
+  });
+}
+
+/** 账户充值（通用入口，account_id 在 body 中） */
+export async function rechargeAccount(data: {
+  account_id: number;
+  amount: number;
+  currency?: string;
+  recharge_method?: string;
+  description?: string;
+}) {
+  return request<{ success: boolean; message?: string; recharge?: RechargeItem }>(
+    '/api/accounts/recharge',
+    {
+      method: 'POST',
+      data,
+    },
+  );
+}
+
+/** 账户充值记录 */
+export async function getAccountRecharges(
+  accountId: number,
+  params?: { page?: number; per_page?: number; status?: string },
+) {
+  return request<{
+    success: boolean;
+    recharges: RechargeItem[];
+    pagination: { total: number };
+  }>(`/api/accounts/${accountId}/recharges`, {
+    method: 'GET',
+    params: params || {},
+  });
+}
+
+/** 账户消耗记录 */
+export async function getAccountConsumptions(
+  accountId: number,
+  params?: { page?: number; per_page?: number; consumption_type?: string },
+) {
+  return request<{
+    success: boolean;
+    consumptions: ConsumptionItem[];
+    pagination: { total: number };
+  }>(`/api/accounts/${accountId}/consumptions`, {
+    method: 'GET',
+    params: params || {},
   });
 }
