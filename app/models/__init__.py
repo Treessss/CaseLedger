@@ -31,6 +31,7 @@ from .fourpx_declaration_setting import FourPxDeclarationSetting
 from .fourpx_declaration_job import FourPxDeclarationJob
 from .ai_api import AiApiAudit, AiApiKey
 from .fourpx_freight import FourPxFreight
+from .fourpx_after_sale_freight import FourPxAfterSaleFreight
 from .fourpx_smart_rejection import FourPxSmartRejection
 
 __all__ = [
@@ -86,6 +87,7 @@ __all__ = [
     "AiApiKey",
     "AiApiAudit",
     "FourPxFreight",
+    "FourPxAfterSaleFreight",
     "FourPxSmartRejection",
     "TrackingDiscoveryState",
 ]

@@ -121,9 +121,15 @@ class AfterSaleCost(db.Model):
     amount_cny = db.Column(db.Numeric(12, 2), nullable=False)
     note = db.Column(db.String(255))
     incurred_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # manual=人工登记, 4px=4PX 接口真实补发运费
+    source = db.Column(db.String(20), nullable=False, default="manual", server_default="manual")
+    fourpx_tracking_no = db.Column(db.String(120))
+    fourpx_synced_at = db.Column(db.DateTime)
 
     after_sale = db.relationship("AfterSale", back_populates="costs")
 
     def to_dict(self):
         return {"id": self.id, "cost_type": self.cost_type, "amount_cny": float(self.amount_cny),
-                "note": self.note, "incurred_at": self.incurred_at.isoformat() if self.incurred_at else None}
+                "note": self.note, "incurred_at": self.incurred_at.isoformat() if self.incurred_at else None,
+                "source": self.source or "manual", "fourpx_tracking_no": self.fourpx_tracking_no,
+                "fourpx_synced_at": self.fourpx_synced_at.isoformat() if self.fourpx_synced_at else None}

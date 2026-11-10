@@ -1600,3 +1600,34 @@ ERANOIR 待补记队列：176 单成功补出库、1 单跳过、0 单失败，*
 ## 部署
 
 后端镜像 `caseledger-copy-app:local`（`333ff9ff1da4`），web/worker 已重启；无前端改动。
+
+---
+
+# 2026-11-10 修复：订单列表「物流标签单号」与「订单日期」重叠
+
+- 物流标签单号列宽只有 180，「仅 Shopify」标签 + 运单号 + 复制图标超出列宽，溢出盖住订单日期列；
+- 修复：该列加宽到 260、固定表格布局、运单号单行省略 + tooltip，复制按钮固定不换行；
+- 订单日期列 150 → 160，表格横向滚动 1840 → 2000；
+- 前端 release `orders-columns-20261110`；无后端改动。
+
+---
+
+# 2026-11-10 调整：订单列表去掉「仅 Shopify」标签
+
+- 物流标签单号列只显示运单号（可复制），不再显示「仅 Shopify」标签；
+- 前端 release `orders-columns-20261110b`；无后端改动。
+
+---
+
+# 2026-11-10 新增：CF 售后补发 4PX 物流费记录（2026-11-01 起）
+
+- 新增表 `fourpx_after_sale_freights`：按售后单存 4PX 真实费用（计费重/明细/总费用/出账时间）；
+- `after_sale_costs` 增加 `source`（manual/4px）、4PX 单号、同步时间；
+- 自动任务每 10 分钟对「2026-11-01 起出库、有 4PX 运单号、还没有 4px 物流费」的 CF 售后：
+  - 用客户单号（CF…）调 `ds.xms.order.getFreight`；
+  - 写 `fourpx_after_sale_freights`；
+  - 自动生成/更新一条 `after_sale_costs`：`cost_type=shipping`、`source=4px`、金额=4PX 总费用；
+  - 不覆盖人工登记的费用；
+- 费用管理每日自动账单 `4PX自动-日期` 现在同时包含订单运费和 CF 售后运费（CF 按售后出库日期归集）；
+- 首次回填：CASEEASE 11-01 起 54 张 CF，成功 52 张，合计 ¥1,555.07；2 张（CF13315、CF14889）4PX 尚未出账，自动重试；
+- 后端镜像 `caseledger-copy-app:local`（`875d8f296718`），web/worker/beat 已重启。

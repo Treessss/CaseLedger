@@ -15,7 +15,8 @@ from flask import current_app, g
 from sqlalchemy import or_
 
 from app import db
-from app.models import Expense, FourPxFreight, Order, OrderCost, ShippingParcel, Shop
+from app.models import (AfterSale, AfterSaleCost, Expense, FourPxAfterSaleFreight, FourPxFreight,
+                       Order, OrderCost, ShippingParcel, Shop)
 from app.utils.errors import ValidationError
 
 BEIJING_OFFSET = timedelta(hours=8)
@@ -155,6 +156,42 @@ def sync_missing_costs(shop_id=None, limit=None):
     return summary
 
 
+def sync_missing_after_sale_costs(shop_id=None, limit=None):
+    """CF 售后补发的 4PX 真实运费：按售后出库日期 >= 切换日归集。"""
+    if not current_app.config.get("LOGISTICS_COST_AUTO", True):
+        return {"enabled": False, "shops": 0, "synced": 0, "failed": 0}
+    from app.services.fourpx_after_sale_freight_service import sync_after_sale_freight
+
+    _ensure_worker_user()
+    limit = int(limit or current_app.config.get("LOGISTICS_COST_BATCH", 100))
+    start, _ = _order_day_range(_cutover())
+    shops = Shop.query.filter(Shop.is_active.is_(True),
+                              Shop.fourpx_app_key_encrypted.isnot(None),
+                              Shop.fourpx_app_secret_encrypted.isnot(None))
+    if shop_id:
+        shops = shops.filter(Shop.id == shop_id)
+    summary = {"enabled": True, "shops": 0, "synced": 0, "failed": 0}
+    for shop in shops.order_by(Shop.id).all():
+        summary["shops"] += 1
+        auto_ids = {row[0] for row in db.session.query(AfterSaleCost.after_sale_id).filter(
+            AfterSaleCost.shop_id == shop.id, AfterSaleCost.source == "4px",
+            AfterSaleCost.cost_type == "shipping").all()}
+        candidates = AfterSale.query.filter(
+            AfterSale.shop_id == shop.id, AfterSale.deleted_at.is_(None),
+            AfterSale.tracking_number.isnot(None), AfterSale.shipped_at.isnot(None),
+            AfterSale.shipped_at >= start,
+        ).order_by(AfterSale.shipped_at.asc(), AfterSale.id.asc()).all()
+        candidates = [row for row in candidates if row.id not in auto_ids][:limit]
+        for record in candidates:
+            try:
+                sync_after_sale_freight(record.id)
+                summary["synced"] += 1
+            except Exception:  # noqa: BLE001 - 单笔失败不影响其它
+                db.session.rollback()
+                summary["failed"] += 1
+    return summary
+
+
 def _daily_total(shop_id, day):
     start, end = _order_day_range(day)
     rows = db.session.query(FourPxFreight.total_fee).join(
@@ -165,6 +202,14 @@ def _daily_total(shop_id, day):
     ).all()
     total = Decimal("0")
     for (fee,) in rows:
+        if fee is not None:
+            total += Decimal(str(fee))
+    cf_rows = db.session.query(FourPxAfterSaleFreight.total_fee).join(
+        AfterSale, AfterSale.id == FourPxAfterSaleFreight.after_sale_id).filter(
+        AfterSale.shop_id == shop_id, AfterSale.deleted_at.is_(None),
+        AfterSale.shipped_at >= start, AfterSale.shipped_at < end,
+    ).all()
+    for (fee,) in cf_rows:
         if fee is not None:
             total += Decimal(str(fee))
     return total.quantize(Decimal("0.01"))

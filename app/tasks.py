@@ -52,13 +52,15 @@ def auto_reconcile_tracking_outbound_task():
 @celery.task
 def sync_logistics_costs_task():
     from flask import g
-    from app.services.logistics_cost_automation_service import (sync_missing_costs,
+    from app.services.logistics_cost_automation_service import (sync_missing_after_sale_costs,
+                                                                sync_missing_costs,
                                                                 write_daily_expenses)
     app = _logistics_app()
     with app.app_context():
         g.current_user = {"authority": "admin", "user_id": None, "permissions": []}
         result = sync_missing_costs()
-        # 同步完立刻回写「按订单日期」的日账单金额，避免当天费用金额滞后到次日 03:10
+        result["after_sale"] = sync_missing_after_sale_costs()
+        # 同步完立刻回写日账单金额，避免当天费用金额滞后到次日 03:10
         result["daily"] = write_daily_expenses(days=14)
         return result
 

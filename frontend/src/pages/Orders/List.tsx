@@ -411,21 +411,28 @@ const OrderList: React.FC = () => {
     {
       title: '物流标签单号',
       key: 'tracking_numbers',
-      width: 180,
+      width: 260,
+      ellipsis: true,
       hideInSearch: true,
       render: (_, record) => {
-        if (record.shipping_label_number) return <Typography.Text copyable>{record.shipping_label_number}</Typography.Text>;
+        const label = record.shipping_label_number;
         const trackingNumbers = record.shopify_tracking_numbers || [];
-        if (!trackingNumbers.length) return <Typography.Text type="secondary">-</Typography.Text>;
+        const number = label || trackingNumbers[0];
+        if (!number) return <Typography.Text type="secondary">-</Typography.Text>;
         return (
-          <Space size={4}>
-            <Tag color="default">仅 Shopify</Tag>
-            <Typography.Text ellipsis={{ tooltip: trackingNumbers.join('、') }} style={{ maxWidth: 130 }}>
-              {trackingNumbers[0]}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, maxWidth: '100%' }}>
+            <Typography.Text
+              ellipsis={{ tooltip: trackingNumbers.length ? trackingNumbers.join('、') : number }}
+              style={{ flex: '1 1 auto', minWidth: 0 }}
+            >
+              {number}
             </Typography.Text>
-            <Typography.Text copyable={{ text: trackingNumbers.join('\n'), icon: <CopyOutlined /> }} />
-            {trackingNumbers.length > 1 && <Tag>共 {trackingNumbers.length} 个</Tag>}
-          </Space>
+            <Typography.Text
+              copyable={{ text: trackingNumbers.length ? trackingNumbers.join('\n') : number, icon: <CopyOutlined /> }}
+              style={{ flex: '0 0 auto' }}
+            />
+            {trackingNumbers.length > 1 && <Tag style={{ flex: '0 0 auto', marginInlineEnd: 0 }}>+{trackingNumbers.length - 1}</Tag>}
+          </div>
         );
       },
     },
@@ -434,7 +441,7 @@ const OrderList: React.FC = () => {
       dataIndex: 'order_date',
       key: 'order_date',
       valueType: 'dateRange',
-      width: 150,
+      width: 160,
       search: {
         transform: (value: any) => {
           if (!value || !value[0] || !value[1]) {
@@ -616,7 +623,8 @@ const OrderList: React.FC = () => {
         }}
         dateFormatter="string"
         headerTitle="订单列表"
-        scroll={{ x: 1840 }}
+        scroll={{ x: 2000 }}
+        tableLayout="fixed"
         // 工具栏已经有「刷新」按钮，隐藏 ProTable 自带的刷新图标，避免两个刷新入口
         options={{ reload: false }}
         toolBarRender={() => [
