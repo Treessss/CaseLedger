@@ -14,12 +14,12 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from flask import g
+from flask import current_app, g
 from sqlalchemy.orm import selectinload
 
 from app import db
 from app.models import (FourPxDeclarationJob, FourPxDeclarationSetting, FourPxSmartRejection,
-                       Order, Payment)
+                       Order, Payment, Shop)
 from app.services import address_validation
 from app.services.shipping_queue_service import _shop_id
 from app.utils.errors import ValidationError
@@ -63,22 +63,52 @@ COUNTRY_NAMES = {
 DECLARE_CURRENCY = "USD"
 DEFAULT_DUTY_TYPE = "U"  # DDU：收件人支付关税
 
-# 申报口径来自实际预报数据：2026-09 的 158 条 4PX 预报单 + 账单明细里的申报品名和单价。
-# 手机壳：US/AU 1.20 USD，CA/GB/NZ 1.00 USD；手机链统一 1.00；手机保护膜 1.20。
-# 钱包在账单明细里只出现过品名（Wallet），没有单价记录，先沿用同一国家口径并标注待确认。
-DECLARE_CATEGORIES = (
-    {"match": ("wallet", "card holder"), "cn": "钱包", "en": "Wallet",
-     "prices": {"default": 1.00}},
-    {"match": ("screen protector", "protective film", "tempered glass"),
-     "cn": "手机保护膜", "en": "Mobile phone protective film", "prices": {"default": 1.20}},
-    {"match": ("case",), "cn": "手机壳", "en": "Phone case",
-     "prices": {"US": 1.20, "AU": 1.20, "CA": 1.00, "GB": 1.00, "NZ": 1.00, "NL": 1.00, "default": 1.00}},
-    {"match": ("chain", "lanyard", "strap"), "cn": "手机链", "en": "phone chain",
-     "prices": {"default": 1.00}},
-    {"match": ("bracket", "stand"), "cn": "磁吸支架", "en": "Magnetic support bracket",
-     "prices": {"default": 1.20}},
-)
-DECLARE_FALLBACK = {"cn": "手机壳", "en": "Phone case", "prices": {"default": 1.00}}
+# 每个店铺的申报品名/单价独立配置，不能互相套用。
+# CASEEASE：手机壳、保护膜、手机链、支架；iPhone Wallet Case 属于手机壳。
+# ERANOIR：只有男士钱包，4PX 实际面单品名是 Card pack（卡包）。
+CASE_DECLARE_PROFILE = {
+    "note": "CASEEASE：手机壳 US/AU 1.20、CA/GB/NZ/NL 1.00；手机链 1.00、保护膜 1.20",
+    "categories": (
+        {"match": ("screen protector", "protective film", "tempered glass"),
+         "cn": "手机保护膜", "en": "Mobile phone protective film", "prices": {"default": 1.20}},
+        # 先判 case 再判 wallet："iPhone Wallet Case" 是手机壳，不是钱包。
+        {"match": ("case",), "cn": "手机壳", "en": "Phone case",
+         "prices": {"US": 1.20, "AU": 1.20, "CA": 1.00, "GB": 1.00, "NZ": 1.00, "NL": 1.00, "default": 1.00}},
+        {"match": ("chain", "lanyard", "strap"), "cn": "手机链", "en": "phone chain",
+         "prices": {"default": 1.00}},
+        {"match": ("bracket", "stand"), "cn": "磁吸支架", "en": "Magnetic support bracket",
+         "prices": {"default": 1.20}},
+    ),
+    "fallback": {"cn": "手机壳", "en": "Phone case", "prices": {"default": 1.00}},
+}
+
+ERANOIR_DECLARE_PROFILE = {
+    "note": "ERANOIR：男士钱包实际 4PX 面单品名为 Card pack（卡包），按 1.20 申报；4PX 下限 1.01",
+    "categories": (
+        {"match": ("wallet", "card holder", "card pack"), "cn": "卡包", "en": "Card pack",
+         "prices": {"default": 1.20}},
+    ),
+    "fallback": {"cn": "卡包", "en": "Card pack", "prices": {"default": 1.20}},
+}
+
+SHOP_DECLARE_PROFILES = {
+    "CASEEASE": CASE_DECLARE_PROFILE,
+    "ERANOIR": ERANOIR_DECLARE_PROFILE,
+}
+
+
+def shop_declare_profile(shop_id):
+    """Resolve a shop's own declaration profile; never share profiles across shops."""
+    shop = db.session.get(Shop, shop_id)
+    name = (getattr(shop, "name", "") or "").strip().upper()
+    profile = SHOP_DECLARE_PROFILES.get(name)
+    if profile:
+        return profile
+    # Tests create disposable "Shop A/B" fixtures; production shops must be configured.
+    if current_app.config.get("TESTING"):
+        return ERANOIR_DECLARE_PROFILE if shop_id == 2 else CASE_DECLARE_PROFILE
+    raise ValidationError("该店铺尚未配置 4PX 申报规则，请先配置后再预申报")
+
 
 _POSTAL_DATA = None
 
@@ -248,12 +278,13 @@ def estimate_weight(quantity):
     return WEIGHT_TWO_ITEMS + WEIGHT_EXTRA_ITEM * (quantity - 2)
 
 
-def declaration_category(title):
+def declaration_category(title, shop_id):
     text = (title or "").casefold()
-    for rule in DECLARE_CATEGORIES:
+    profile = shop_declare_profile(shop_id)
+    for rule in profile["categories"]:
         if any(keyword in text for keyword in rule["match"]):
             return rule
-    return DECLARE_FALLBACK
+    return profile["fallback"]
 
 
 def declared_unit_price(rule, country):
@@ -261,11 +292,11 @@ def declared_unit_price(rule, country):
     return float(prices.get(country, prices.get("default", 1.00)))
 
 
-def declare_lines(lines, country):
-    """按申报口径把订单商品归并成申报行：品名、数量、单价、金额。"""
+def declare_lines(lines, country, shop_id):
+    """按店铺申报口径把订单商品归并成申报行：品名、数量、单价、金额。"""
     grouped = {}
     for line in lines:
-        rule = declaration_category(line["title"])
+        rule = declaration_category(line["title"], shop_id)
         row = grouped.setdefault(rule["en"], {
             "name_cn": rule["cn"], "name_en": rule["en"],
             "quantity": 0, "unit_price": declared_unit_price(rule, country), "amount": 0.0,
@@ -497,7 +528,7 @@ def _build_row(order):
     if blockers:
         product_key = None
     weight = estimate_weight(quantity)
-    declare_rows = declare_lines(lines, country)
+    declare_rows = declare_lines(lines, country, order.shop_id)
     value = declared_total(declare_rows)
     is_ready = product_key is not None and not blockers
     return {
@@ -527,16 +558,26 @@ def _build_row(order):
     }
 
 
-def _rules():
+def _unique_declare_rules(profile):
+    seen, rows = set(), []
+    for rule in (*profile["categories"], profile["fallback"]):
+        if rule["en"] not in seen:
+            seen.add(rule["en"])
+            rows.append(rule)
+    return rows
+
+
+def _rules(shop_id):
+    profile = shop_declare_profile(shop_id)
     return {
         "products": {key: {"code": product["code"], "name": product["name"]} for key, product in PRODUCTS.items()},
         "weight": {"one_item": WEIGHT_ONE_ITEM, "two_items": WEIGHT_TWO_ITEMS, "extra_item": WEIGHT_EXTRA_ITEM},
         "declare": {
             "currency": DECLARE_CURRENCY,
-            "note": "按 158 条历史 4PX 预报单与账单明细：US/AU 1.20、CA/GB/NZ 1.00；手机链 1.00、保护膜 1.20；钱包待确认",
+            "note": profile["note"],
             "categories": [
                 {"cn": rule["cn"], "en": rule["en"], "prices": rule["prices"]}
-                for rule in (*DECLARE_CATEGORIES, DECLARE_FALLBACK)
+                for rule in _unique_declare_rules(profile)
             ],
         },
         "duty_type": DEFAULT_DUTY_TYPE,
@@ -628,7 +669,7 @@ def check(args):
     return {
         "summary": summary,
         "pagination": {"page": page, "per_page": per_page, "total": total, "pages": pages},
-        "rules": _rules(),
+        "rules": _rules(shop_id),
         "notices": _notices(),
         "orders": rows[start:start + per_page],
     }
@@ -730,14 +771,14 @@ def plan_batch(payload):
 
 
 
-def _declared_product_list(declare_rows, lines):
+def _declared_product_list(declare_rows, lines, shop_id):
     """商品信息也按申报口径（品名/申报单价），不再抄订单商品原名和原价。
 
     sku_code 仍优先用订单实际 SKU，方便对货；同一申报品名合并多行时取第一个 SKU。
     """
     by_category = {}
     for line in lines:
-        rule = declaration_category(line["title"])
+        rule = declaration_category(line["title"], shop_id)
         by_category.setdefault(rule["en"], []).append(line)
     product_list = []
     for row in declare_rows:
@@ -767,7 +808,7 @@ def _payload_preview(order, lines, product_key, weight, value, declare_rows):
             "parcel_value": value,
             "currency": DECLARE_CURRENCY,
             "include_battery": "N",
-            "product_list": _declared_product_list(declare_rows, lines),
+            "product_list": _declared_product_list(declare_rows, lines, order.shop_id),
             "declare_product_info": [{
                 "declare_product_name_cn": row["name_cn"],
                 "declare_product_name_en": row["name_en"],
@@ -846,7 +887,7 @@ def _create_payload(order, row):
             "parcel_value": row["declared_value"],
             "currency": DECLARE_CURRENCY,
             "include_battery": "N",
-            "product_list": _declared_product_list(row["declared_items"], items),
+            "product_list": _declared_product_list(row["declared_items"], items, order.shop_id),
             "declare_product_info": [{
                 "declare_product_name_cn": declared["name_cn"],
                 "declare_product_name_en": declared["name_en"],

@@ -318,6 +318,39 @@ def _stock_rows(shop_id, *, include_catalog=True, group_keys=None, seed_items=()
         row["reserved_quantity"] = 0
         row["available_quantity"] = row["on_hand_quantity"]
         row["occupied_orders"] = []
+    # Stock rows are seeded from historical purchase/order snapshots, whose
+    # variant titles are immutable. Show the current catalog name for the same
+    # variant ID so renamed Shopify variants update the inventory view too.
+    variant_ids = set()
+    for key in rows:
+        try:
+            parts = loads(key)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parts, list) and len(parts) == 2 and parts[0] == "variant":
+            variant_ids.add(str(parts[1]))
+    if variant_ids:
+        current = Product.query.filter(
+            Product.shop_id == shop_id, Product.shopify_variant_id.in_(variant_ids),
+        ).all()
+        by_variant = {item.shopify_variant_id: item for item in current}
+        for key, row in rows.items():
+            try:
+                parts = loads(key)
+            except (ValueError, TypeError):
+                continue
+            if not (isinstance(parts, list) and len(parts) == 2 and parts[0] == "variant"):
+                continue
+            product = by_variant.get(str(parts[1]))
+            if not product:
+                continue
+            color = _color_name(product.variant_title)
+            row["title"] = product.title or row["title"]
+            row["color"] = color
+            row["model"] = _model_name(product.variant_title, color)
+            row["configuration"] = _accessory_configuration(product.variant_title)
+            row["sku"] = product.sku or row["sku"]
+            row["image_url"] = product.image_url or row["image_url"]
     return rows if group_keys is None else {key: row for key, row in rows.items() if key in group_keys}
 
 

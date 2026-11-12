@@ -142,12 +142,51 @@ def _catalog_titles(shop_id, search, names, mapped_only, *, page=None, per_page=
         query = query.filter(or_(source.c.title.ilike(pattern, escape='\\'), source.c.raw_title.ilike(pattern, escape='\\'),
             source.c.variant.ilike(pattern, escape='\\'), source.c.pid.in_(matched_ids),
             and_(legacy, source.c.raw_title.in_(matched_titles))))
+    # 历史订单/售后快照里可能缺少 shopify_product_id，会按同一 title 多生成一行
+    # 「legacy 商品」，造成商品管理出现重复商品。现在商品缓存已同步到 Product，
+    # 只要 Product 里存在同名商品，就不再展示 legacy 行（颜色/映射统一走 Product）。
+    product_titles = db.session.query(Product.title).filter(
+        Product.shop_id == shop_id, Product.title.isnot(None), Product.title != "",
+    )
+    # 商品改过名时，历史订单快照仍用旧标题（也是 ProductNaming 的 alias）。
+    # 这些 legacy 行也要隐藏，否则同一商品会以旧标题再出现一行。
+    naming_titles = set()
+    for current_title, aliases in db.session.query(
+            ProductNaming.current_title, ProductNaming.aliases).filter(
+            ProductNaming.shop_id == shop_id).all():
+        if current_title:
+            naming_titles.add(current_title)
+        for alias in aliases or []:
+            if alias:
+                naming_titles.add(alias)
+    query = query.filter(or_(
+        source.c.pid != "",
+        and_(~source.c.title.in_(product_titles), source.c.title.notin_(naming_titles)),
+    ))
     titles = query.distinct().subquery()
     query = db.session.query(titles.c.pid, titles.c.title).order_by(func.lower(titles.c.title), titles.c.pid)
     if page is None:
         return query.all()
     total = query.order_by(None).count()
     return query.offset((page - 1) * per_page).limit(per_page).all(), total
+
+
+def _preferred_color_image(color, images):
+    """Pick the variant-specific image for a color instead of the product main fallback."""
+    seen = []
+    for image in images:
+        if image and image not in seen:
+            seen.append(image)
+    slug = re.sub(r"[^a-z0-9]+", "-", str(color or "").casefold()).strip("-")
+    if slug:
+        for image in seen:
+            if slug in image.casefold():
+                return image
+    for image in seen:
+        low = image.casefold()
+        if "product_main" not in low and "product-main" not in low and "placeholder" not in low:
+            return image
+    return seen[0] if seen else ""
 
 
 def _catalog(shop_id, titles=None):
@@ -170,10 +209,13 @@ def _catalog(shop_id, titles=None):
             product["image_url"] = image
         color = _color_name(variant)
         if color != UNKNOWN_COLOR:
-            group = product["colors"].setdefault(color, {"original_color": color, "image_url": "", "variants": set()})
+            group = product["colors"].setdefault(color, {"original_color": color, "image_url": "", "images": [], "variants": set()})
             group["variants"].add(variant or "")
-            if image and not group["image_url"]:
-                group["image_url"] = image
+            if image:
+                group["images"].append(image)
+    for product in products.values():
+        for color, group in product["colors"].items():
+            group["image_url"] = _preferred_color_image(color, group.pop("images", []))
     return products
 
 

@@ -182,15 +182,14 @@ def test_api_endpoint_returns_rule_check_payload(app, client, admin_headers, sho
 
 def test_wallet_and_screen_protector_use_their_own_declared_names(app, shop_ids):
     with app.app_context():
-        _order(shop_ids["a"], "1014", country="US", price="19.99",
+        _order(shop_ids["b"], "1014", country="US", price="19.99",
                title="Men's Slim RFID Bifold Wallet with Pop-Up Card Holder")
         _order(shop_ids["a"], "1015", country="GB", price="15.00",
                title="Titan 2026 Dust-Removal Easy-App Screen Protector")
-        result = _check(shop_ids["a"])
-        wallet = _row(result, "1014")
-        film = _row(result, "1015")
-        assert wallet["declared_items"][0]["name_en"] == "Wallet"
-        assert wallet["declared_value"] == 1.00
+        wallet = _row(_check(shop_ids["b"]), "1014")
+        film = _row(_check(shop_ids["a"]), "1015")
+        assert wallet["declared_items"][0]["name_en"] == "Card pack"
+        assert wallet["declared_value"] == 1.20
         assert film["declared_items"][0]["name_en"] == "Mobile phone protective film"
         assert film["declared_value"] == 1.20
 
@@ -557,17 +556,17 @@ def test_product_list_uses_declared_lines_not_order_price(app, shop_ids):
         order = _order(shop_ids["a"], "7401", title="Phone Case", price="22.60")
         db.session.add(OrderItem(
             shop_id=shop_ids["a"], order_id=order.id, shopify_line_item_id="7401-1",
-            title="Wallet", sku="SKU-WALLET", quantity=1, price=Decimal("9.90")))
+            title="Titan Screen Protector", sku="SKU-FILM", quantity=1, price=Decimal("9.90")))
         db.session.commit()
         _create(shop_ids["a"], [order.id])
         payload = FakeCreateClient.created[0]
         products = payload["parcel_list"][0]["product_list"]
         by_name = {item["product_name"]: item for item in products}
-        assert set(by_name) == {"Phone case", "Wallet"}
+        assert set(by_name) == {"Phone case", "Mobile phone protective film"}
         assert by_name["Phone case"]["product_unit_price"] == 1.2
-        assert by_name["Wallet"]["product_unit_price"] == 1.0
-        assert sum(item["product_unit_price"] * item["qty"] for item in products) == 2.2
-        assert payload["parcel_list"][0]["parcel_value"] == 2.2
+        assert by_name["Mobile phone protective film"]["product_unit_price"] == 1.2
+        assert sum(item["product_unit_price"] * item["qty"] for item in products) == 2.4
+        assert payload["parcel_list"][0]["parcel_value"] == 2.4
 
 
 def test_create_does_not_fetch_label_or_store_placeholder_barcode(app, shop_ids, monkeypatch):
@@ -844,3 +843,10 @@ def test_recipient_street_merges_shopify_address_lines(app):
         customer_name="T", customer_phone="", customer_email="",
     )
     assert _recipient(duplicate)["street"] == "79 Andrew Crescent"
+
+
+def test_wallet_case_is_caseease_only_and_men_wallet_is_eranoir_only(app, shop_ids):
+    from app.services.fourpx_declaration_service import declaration_category
+    assert declaration_category("iPhone Wallet Case with 2-Card Holder & 360° Ring Stand", shop_ids["a"])["en"] == "Phone case"
+    assert declaration_category("Men's Slim RFID Bifold Wallet with Pop-Up Card Holder", shop_ids["b"])["en"] == "Card pack"
+    assert declaration_category("Men's Slim RFID Bifold Wallet with Pop-Up Card Holder", shop_ids["a"])["en"] == "Phone case"

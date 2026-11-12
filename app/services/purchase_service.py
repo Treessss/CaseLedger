@@ -24,14 +24,14 @@ COLOR_WORD_RE = re.compile(
     r"(?<![a-z])(?:black|white|grey|gray|silver|silve|gold|red|pink|blue|green|yellow|"
     r"purple|orange|brown|beige|mint|lavender|lilac|rose|coral|lemon|sky|aqua|mocha|"
     r"cream|cherry|pitaya|blush|pearl|chrome|navy|teal|cyan|magenta|burgundy|"
-    r"maroon|ivory|khaki|tan|lime|rainbow|titanium|champagne|olive|scarlet|carbon|coffee|"
+    r"maroon|ivory|khaki|tan|lime|rainbow|titanium|champagne|olive|scarlet|carbon|coffee|mauve|"
     r"transparent|clear|nude|chocolate)(?![a-z])|[黑白灰银金红粉蓝绿黄紫橙棕褐米青彩]色?",
     re.IGNORECASE,
 )
 ACCESSORY_SUFFIX_RE = re.compile(r"\s*\+\s*(?:wrist chain|stand|lanyard|strap)\b.*$", re.IGNORECASE)
 COLOR_LABEL_RE = re.compile(r"^(?:color|colour|颜色)\s*[:：]\s*", re.IGNORECASE)
 PHONE_MODEL_RE = re.compile(
-    r"\biphone\s*(\d{1,2})\s*(pro\s*max|pro|air|plus|max|mini)?\b"
+    r"\biphone\s*(\d{1,2})\s*(pro\s*max|pro|air|plus|max|mini|se|e)?\b"
     r"|\b(?:galaxy\s*[sa]|pixel)\s*(\d{1,2})\s*(ultra|pro|plus)?\b",
     re.IGNORECASE,
 )
