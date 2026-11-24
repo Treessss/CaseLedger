@@ -122,3 +122,19 @@ def test_compatible_stock_from_another_product_is_not_used(app, client, admin_he
     with app.app_context():
         assert InventoryReservation.query.filter_by(order_id=b).one().quantity == 1
         assert OutboundEvent.query.count() == 0
+
+
+def test_gradient_magnetic_wrist_chain_stock_is_compatible(app):
+    from types import SimpleNamespace
+    from app.services.outbound_inventory_service import _compatible_signature
+
+    plain = SimpleNamespace(shopify_product_id="16102788366639",
+                            title="Gradient Magnetic iPhone Case with Matching Stand",
+                            variant_title="iPhone 17 Pro Max / Rose Pink")
+    wrist = SimpleNamespace(shopify_product_id="16102788366639",
+                            title="Gradient Magnetic iPhone Case with Matching Stand",
+                            variant_title="iPhone 17 Pro Max / Rose Pink + Wrist Chain")
+    assert _compatible_signature(plain) == _compatible_signature(wrist)
+    other = SimpleNamespace(shopify_product_id="other", title="Other Case",
+                            variant_title="iPhone 17 Pro Max / Rose Pink + Wrist Chain")
+    assert _compatible_signature(other) != _compatible_signature(plain)

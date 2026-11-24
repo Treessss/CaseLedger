@@ -12,6 +12,10 @@ from app.utils.errors import ValidationError
 from app.utils.order_lines import is_tip_line
 
 PHONE_PAIR = re.compile(r"\biphone\s*(17|18)\s*pro\s*(max)?\b", re.I)
+# 该商品的 +Wrist Chain 与普通款是同一库存 SKU（链子随包，不单独区分库存）。
+GRADIENT_MAGNETIC_PRODUCT_ID = "16102788366639"
+GRADIENT_MAGNETIC_TITLE = "gradient magnetic iphone case with matching stand"
+WRIST_CHAIN_SUFFIX_RE = re.compile(r"\s*\+\s*wrist\s*chain\b.*$", re.I)
 
 
 def _key(item):
@@ -26,7 +30,14 @@ def _compatible_signature(item):
     match = matches[0]
     if raw[match.end():].lstrip().lower().startswith(('plus', 'mini', 'air')):
         return None
-    options = re.sub(r'\s+', ' ', raw[:match.start()] + '@phone@' + raw[match.end():]).strip().casefold()
+    prefix = raw[:match.start()]
+    tail = raw[match.end():]
+    title = (getattr(item, "title", "") or "").casefold()
+    if str(item.shopify_product_id or "") == GRADIENT_MAGNETIC_PRODUCT_ID or GRADIENT_MAGNETIC_TITLE in title:
+        # 该商品的 Wrist Chain 与普通款共用库存，仅去掉链子配置参与兼容匹配。
+        prefix = WRIST_CHAIN_SUFFIX_RE.sub("", prefix)
+        tail = WRIST_CHAIN_SUFFIX_RE.sub("", tail)
+    options = re.sub(r'\s+', ' ', prefix + '@phone@' + tail).strip().casefold()
     return str(item.shopify_product_id), bool(match.group(2)), options
 
 
