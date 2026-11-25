@@ -99,15 +99,25 @@ SHOP_DECLARE_PROFILES = {
 
 def shop_declare_profile(shop_id):
     """Resolve a shop's own declaration profile; never share profiles across shops."""
-    shop = db.session.get(Shop, shop_id)
-    name = (getattr(shop, "name", "") or "").strip().upper()
+    # Resolve once per request: Order rows call this for every candidate, and a
+    # full Shop load also pulls its users/relations (3 extra queries each time).
+    cache = getattr(g, "_declare_profile_cache", None)
+    if cache is None:
+        cache = {}
+        g._declare_profile_cache = cache
+    if shop_id in cache:
+        return cache[shop_id]
+    name = db.session.query(Shop.name).filter(Shop.id == shop_id).scalar()
+    name = (name or "").strip().upper()
     profile = SHOP_DECLARE_PROFILES.get(name)
-    if profile:
-        return profile
-    # Tests create disposable "Shop A/B" fixtures; production shops must be configured.
-    if current_app.config.get("TESTING"):
-        return ERANOIR_DECLARE_PROFILE if shop_id == 2 else CASE_DECLARE_PROFILE
-    raise ValidationError("该店铺尚未配置 4PX 申报规则，请先配置后再预申报")
+    if profile is None:
+        # Tests create disposable "Shop A/B" fixtures; production shops must be configured.
+        if current_app.config.get("TESTING"):
+            profile = ERANOIR_DECLARE_PROFILE if shop_id == 2 else CASE_DECLARE_PROFILE
+        else:
+            raise ValidationError("该店铺尚未配置 4PX 申报规则，请先配置后再预申报")
+    cache[shop_id] = profile
+    return profile
 
 
 _POSTAL_DATA = None
@@ -212,6 +222,15 @@ def _smart_rejected(shop_id, country, postal):
         shop_id=shop_id, country=country, postal_code=_normalized_postal(postal),
         product_code=PRODUCTS["smart"]["code"],
     ).first() is not None
+
+
+def _smart_rejection_keys(shop_id):
+    """Load all smart-postal rejections for a shop once (avoid one query per order)."""
+    if not shop_id:
+        return set()
+    rows = db.session.query(FourPxSmartRejection.country, FourPxSmartRejection.postal_code).filter_by(
+        shop_id=shop_id, product_code=PRODUCTS["smart"]["code"]).all()
+    return {(str(country or "").upper(), _normalized_postal(postal)) for country, postal in rows}
 
 
 def _record_smart_rejection(shop_id, country, postal, detail):
@@ -382,7 +401,7 @@ def _reason_group(reasons):
     return "other"
 
 
-def _blockers(order, country, quantity):
+def _blockers(order, country, quantity, *, refunded=None):
     reasons = []
     address = order.shipping_address or {}
     if not address.get("zip"):
@@ -393,7 +412,9 @@ def _blockers(order, country, quantity):
         reasons.append("国家不在发货规则内，需人工处理")
     if quantity <= 0:
         reasons.append("订单没有可申报的商品件数")
-    if _is_fully_refunded(order):
+    if refunded is None:
+        refunded = _is_fully_refunded(order)
+    if refunded:
         reasons.append("订单已全额退款，无需申报")
     reasons.extend(_address_issues(order, country))
     return reasons
@@ -514,7 +535,7 @@ def _candidate_query(shop_id, search=""):
     return query.order_by(Order.order_date.asc(), Order.id.asc())
 
 
-def _build_row(order):
+def _build_row(order, *, refunds=None, smart_rejections=None):
     lines = _items(order)
     quantity = _quantity(lines)
     address = order.shipping_address or {}
@@ -522,9 +543,16 @@ def _build_row(order):
     postal = str(address.get("zip") or "").strip()
     special_pair = _has_special_pair(lines)
     stand_set = _is_stand_set(lines)
-    smart_blocked = country == "CA" and _smart_rejected(order.shop_id, country, postal)
+    if smart_rejections is not None:
+        smart_blocked = country == "CA" and (country, _normalized_postal(postal)) in smart_rejections
+    else:
+        smart_blocked = country == "CA" and _smart_rejected(order.shop_id, country, postal)
+    if refunds is not None:
+        refunded = _refund_covers_total(order.total_price, refunds.get(order.id, Decimal("0")))
+    else:
+        refunded = _is_fully_refunded(order)
     product_key, reason = select_product(country, quantity, special_pair, postal, stand_set, smart_blocked)
-    blockers = _blockers(order, country, quantity)
+    blockers = _blockers(order, country, quantity, refunded=refunded)
     if blockers:
         product_key = None
     weight = estimate_weight(quantity)
@@ -565,6 +593,14 @@ def _unique_declare_rules(profile):
             seen.add(rule["en"])
             rows.append(rule)
     return rows
+
+
+def _build_rows(orders, shop_id):
+    """Build check rows with one bulk refund and smart-postal lookup per request."""
+    orders = list(orders)
+    refunds = _refund_amounts([order.id for order in orders])
+    smart_rejections = _smart_rejection_keys(shop_id)
+    return [_build_row(order, refunds=refunds, smart_rejections=smart_rejections) for order in orders]
 
 
 def _rules(shop_id):
@@ -651,7 +687,7 @@ def check(args):
     page = _positive(args.get("page"), 1)
     per_page = min(_positive(args.get("per_page"), 20), 100)
     search = str(args.get("search") or "").strip()[:120]
-    ranged = _filter_range([_build_row(order) for order in _candidate_orders(shop_id, search)], args)
+    ranged = _filter_range(_build_rows(_candidate_orders(shop_id, search), shop_id), args)
     summary = _summary(ranged)
     status = str(args.get("status") or "").strip().lower()
     if status == "ready":
@@ -679,7 +715,7 @@ def export_csv(args):
     """把检查结果导出成 CSV（人工处理用），最多 2000 行。"""
     shop_id = _shop_id(args.get("shop_id"))
     search = str(args.get("search") or "").strip()[:120]
-    rows = _filter_range([_build_row(order) for order in _candidate_orders(shop_id, search)[:2000]], args)
+    rows = _filter_range(_build_rows(_candidate_orders(shop_id, search)[:2000], shop_id), args)
     status = str(args.get("status") or "").strip().lower()
     if status == "ready":
         rows = [row for row in rows if row["ready"]]
@@ -741,7 +777,7 @@ def plan_batch(payload):
         ~Order.parcels.any(),
     ).all()
     found = {order.id for order in orders}
-    rows = [_build_row(order) for order in orders]
+    rows = _build_rows(orders, shop_id)
     groups = {}
     for row in rows:
         if not row["ready"]:
@@ -1164,7 +1200,7 @@ def create_declarations(args, *, client_factory=None):
     low, high = _order_range(args)
     if not selected_ids and (low is not None or high is not None):
         candidates = _filter_range(
-            [_build_row(order) for order in _candidate_orders(shop_id)], args)
+            _build_rows(_candidate_orders(shop_id), shop_id), args)
         selected_ids = [row["order_id"] for row in candidates if row["ready"]][:50]
     if not selected_ids:
         raise ValidationError("请选择要预申报的订单，或填写订单号范围")
