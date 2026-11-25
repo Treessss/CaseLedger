@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 from app import db
+from app.services.fourpx_freight_retry_service import clear as clear_freight_retry
 from app.models import FourPxFreight, Order, Shop, ShippingParcel
 from app.services import fourpx_client
 from app.services.fourpx_client import FourPxClient, FourPxError
@@ -106,6 +107,8 @@ def sync_order_freight(order_id, *, client_factory=FourPxClient):
     row.billed_at = parsed["billed_at"]
     row.raw = parsed["raw"]
     row.synced_at = datetime.utcnow()
+    db.session.commit()
+    clear_freight_retry(order.id)
     db.session.commit()
     return row.to_dict()
 

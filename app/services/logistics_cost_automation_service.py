@@ -18,6 +18,7 @@ from app import db
 from app.models import (AfterSale, AfterSaleCost, Expense, FourPxAfterSaleFreight, FourPxFreight,
                        Order, OrderCost, ShippingParcel, Shop)
 from app.utils.errors import ValidationError
+from app.services.fourpx_freight_retry_service import clear, record_failure, waiting_order_ids
 
 BEIJING_OFFSET = timedelta(hours=8)
 DEFAULT_CUTOVER = "2026-11-01"
@@ -80,7 +81,8 @@ def _candidate_orders(shop_id, limit):
             or_(ShippingParcel.source == "4px", ShippingParcel.label_number.ilike("4PX%")),
         ).distinct().all()
     }
-    orders = [order for order in query.all() if order.id in parcel_order_ids]
+    waiting = waiting_order_ids(shop_id)
+    orders = [order for order in query.all() if order.id in parcel_order_ids and order.id not in waiting]
     costs = _cost_order_ids([order.id for order in orders])
     freight_ids = set(_freight_order_ids([order.id for order in orders]))
     min_age = timedelta(hours=int(current_app.config.get("LOGISTICS_COST_MIN_AGE_HOURS", 24)))
@@ -109,9 +111,11 @@ def sync_missing_costs(shop_id=None, limit=None):
                                    Shop.fourpx_app_secret_encrypted.isnot(None))
     if shop_id:
         shop_query = shop_query.filter(Shop.id == shop_id)
-    summary = {"enabled": True, "shops": 0, "synced": 0, "created": 0, "failed": 0, "updated": 0}
+    summary = {"enabled": True, "shops": 0, "synced": 0, "created": 0, "failed": 0,
+               "updated": 0, "waiting": 0}
     for shop in shop_query.order_by(Shop.id).all():
         summary["shops"] += 1
+        summary["waiting"] += len(waiting_order_ids(shop.id))
         candidates = _candidate_orders(shop.id, limit)
         if not candidates:
             continue
@@ -125,6 +129,7 @@ def sync_missing_costs(shop_id=None, limit=None):
                     freight = db.session.get(FourPxFreight, data["id"]) if data.get("id") else \
                         FourPxFreight.query.filter_by(order_id=order.id).one_or_none()
                 if freight is None or freight.total_fee is None:
+                    record_failure(shop.id, order.id, "4PX 尚未出账")
                     summary["failed"] += 1
                     continue
                 shipping = Decimal(str(freight.total_fee)).quantize(Decimal("0.01"))
@@ -150,8 +155,14 @@ def sync_missing_costs(shop_id=None, limit=None):
                     cost.fourpx_synced_at = datetime.utcnow()
                     summary["updated"] += 1
                     db.session.commit()
-            except Exception:  # noqa: BLE001 - 单笔失败不影响其它
+                clear(order.id)
+                db.session.commit()
+            except Exception as exc:  # noqa: BLE001 - 单笔失败不影响其它
                 db.session.rollback()
+                try:
+                    record_failure(shop.id, order.id, str(exc) or "4PX 尚未出账")
+                except Exception:  # noqa: BLE001 - 退避写入失败不中断批量
+                    db.session.rollback()
                 summary["failed"] += 1
     return summary
 

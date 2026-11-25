@@ -282,3 +282,21 @@ def test_order_cost_detail_shape(client, admin_headers):
     body = client.get(f'/api/order-costs/{cost_id}', headers=admin_headers).get_json()
     assert body['order_cost']['order_number'] == '#D1'
     assert body['data']['order_number'] == '#D1'
+
+
+def test_freight_retry_backoff_and_clear(app, shop_ids):
+    from app import db
+    from app.models import FourPxFreightRetry
+    from app.services.fourpx_freight_retry_service import clear, record_failure, waiting_order_ids
+
+    with app.app_context():
+        order_id = _order(shop_ids["a"], "#RETRY-BACKOFF")
+        assert order_id not in waiting_order_ids(shop_ids["a"])
+        first = record_failure(shop_ids["a"], order_id, "4PX 尚未出账")
+        assert first.attempts == 1
+        assert order_id in waiting_order_ids(shop_ids["a"])
+        second = record_failure(shop_ids["a"], order_id, "4PX 尚未出账")
+        assert second.attempts == 2
+        clear(order_id)
+        db.session.commit()
+        assert FourPxFreightRetry.query.filter_by(order_id=order_id).one_or_none() is None

@@ -37,3 +37,22 @@ class FourPxFreight(db.Model):
             "billed_at": self.billed_at.isoformat() if self.billed_at else None,
             "synced_at": self.synced_at.isoformat() if self.synced_at else None,
         }
+
+
+class FourPxFreightRetry(db.Model):
+    """Exponential backoff for orders whose 4PX fee is not billed yet.
+
+    Kept separate from FourPxFreight because the latter only exists after a
+    successful fee fetch; otherwise every 10-minute scheduler run would query
+    the same unbilled orders again and again.
+    """
+
+    __tablename__ = "fourpx_freight_retries"
+
+    id = db.Column(db.Integer, primary_key=True)
+    shop_id = db.Column(db.Integer, db.ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = db.Column(db.Integer, db.ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, unique=True)
+    attempts = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    next_retry_at = db.Column(db.DateTime, nullable=False, index=True)
+    last_error = db.Column(db.String(500))
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
