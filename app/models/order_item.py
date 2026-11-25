@@ -9,7 +9,10 @@ class OrderItem(db.Model):
     """订单商品明细（一个订单可以有多个商品行）。"""
 
     __tablename__ = "order_items"
-    __table_args__ = (UniqueConstraint("order_id", "shopify_line_item_id", name="uq_order_line_item"),)
+    __table_args__ = (
+        UniqueConstraint("order_id", "shopify_line_item_id", name="uq_order_line_item"),
+        db.Index("ix_order_items_shop_variant", "shop_id", "shopify_variant_id"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     shop_id = db.Column(db.Integer, db.ForeignKey("shops.id"), nullable=True, index=True)

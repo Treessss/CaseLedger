@@ -19,6 +19,7 @@ class PurchaseListEdit(db.Model):
 
 class PurchaseList(db.Model):
     __tablename__ = "purchase_lists"
+    __table_args__ = (db.Index("ix_purchase_lists_shop_status", "shop_id", "status"),)
 
     id = db.Column(db.Integer, primary_key=True)
     shop_id = db.Column(db.Integer, db.ForeignKey("shops.id"), nullable=False, index=True)

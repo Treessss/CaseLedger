@@ -16,6 +16,7 @@ class Product(db.Model):
     # 添加复合唯一约束
     __table_args__ = (
         UniqueConstraint("shopify_product_id", "shopify_variant_id", name="uq_product_variant"),
+        db.Index("ix_products_shop_variant", "shop_id", "shopify_variant_id"),
     )
 
     # 商品基本信息
