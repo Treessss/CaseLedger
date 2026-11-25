@@ -128,6 +128,22 @@ def sync_fourpx_label_barcodes_task(self, shop_id, parcel_ids):
         return result
 
 
+def sync_pending_fourpx_label_barcodes_task(self):
+    """Periodic safety net: fill physical barcodes for pending 4PX parcels."""
+    from app.services.fourpx_barcode_sync_service import sync_barcodes
+
+    app = create_app()
+    with app.app_context():
+        results = {}
+        for shop in _active_shops():
+            try:
+                results[shop.id] = sync_barcodes(shop.id)
+            except Exception:  # noqa: BLE001 - one shop must not block the others
+                db.session.rollback()
+                results[shop.id] = {"updated": 0, "failed": [{"reason": "barcode sync failed"}]}
+        return results
+
+
 def _active_shops():
     """当前启用的店铺列表（定时同步按店铺逐个执行）。"""
     from app.models import Shop

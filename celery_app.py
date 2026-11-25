@@ -49,6 +49,9 @@ celery.conf.update(
         'sync-after-sale-barcodes': {
             'task': 'app.tasks.sync_after_sale_barcodes_task', 'schedule': 600.0,
         },
+        'sync-pending-fourpx-label-barcodes': {
+            'task': 'app.tasks.sync_pending_fourpx_label_barcodes_task', 'schedule': 1800.0,
+        },
         'sync-logistics-costs': {
             'task': 'app.tasks.sync_logistics_costs_task', 'schedule': 600.0,
         },
