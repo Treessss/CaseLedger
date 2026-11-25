@@ -1,8 +1,12 @@
 """Read-only shared-stock planning; soft suggestions never mutate receipt history."""
 import json
+import threading
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from types import SimpleNamespace
+
+from flask import current_app
 
 from sqlalchemy.orm import load_only, noload, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -25,8 +29,8 @@ def active_packing_sessions(shop_id, now=None):
     return [session for session in sessions if session.expires_at > now or session.order_id in partial]
 
 
-def build_pool_plan(shop_id, *, include_order_ids=(), exclude_purchase_id=None,
-                    respect_procurement_exclusion=True):
+def _build_pool_plan_uncached(shop_id, *, include_order_ids=(), exclude_purchase_id=None,
+                              respect_procurement_exclusion=True):
     from app.services.inventory_service import _stock_rows, _stock_seed_items
     from app.services.outbound_inventory_service import _compatible_signature
     from app.services.purchase_service import _group_key
@@ -439,3 +443,42 @@ def build_pool_plan(shop_id, *, include_order_ids=(), exclude_purchase_id=None,
             'physical_allocations': physical_allocations, 'debited_order_ids': debited_ids,
             'metadata': metadata, 'suggested_ready_order_ids': suggested_ready_orders,
             'suggested_cf_ready_ids': suggested_ready_sales}
+
+
+# Short-lived, process-local snapshot. Pool reads are read-mostly; writes (scan,
+# receipt, purchase changes) still use live stock checks. TESTING bypasses this
+# so fixture data never leaks between tests.
+_POOL_CACHE = {}
+_POOL_CACHE_LOCK = threading.Lock()
+
+
+def build_pool_plan(shop_id, *, include_order_ids=(), exclude_purchase_id=None,
+                    respect_procurement_exclusion=True, use_cache=True):
+    if not use_cache or current_app.config.get("TESTING"):
+        return _build_pool_plan_uncached(
+            shop_id, include_order_ids=include_order_ids,
+            exclude_purchase_id=exclude_purchase_id,
+            respect_procurement_exclusion=respect_procurement_exclusion,
+        )
+    ttl = float(current_app.config.get("INVENTORY_POOL_CACHE_TTL", 3.0) or 0)
+    if ttl <= 0:
+        return _build_pool_plan_uncached(
+            shop_id, include_order_ids=include_order_ids,
+            exclude_purchase_id=exclude_purchase_id,
+            respect_procurement_exclusion=respect_procurement_exclusion,
+        )
+    key = (int(shop_id), tuple(sorted(include_order_ids or ())), exclude_purchase_id,
+           bool(respect_procurement_exclusion))
+    now = time.monotonic()
+    with _POOL_CACHE_LOCK:
+        cached = _POOL_CACHE.get(key)
+        if cached and now - cached[0] <= ttl:
+            return cached[1]
+    result = _build_pool_plan_uncached(
+        shop_id, include_order_ids=include_order_ids,
+        exclude_purchase_id=exclude_purchase_id,
+        respect_procurement_exclusion=respect_procurement_exclusion,
+    )
+    with _POOL_CACHE_LOCK:
+        _POOL_CACHE[key] = (time.monotonic(), result)
+    return result

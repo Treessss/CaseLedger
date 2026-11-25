@@ -327,7 +327,7 @@ def build_ready_labels_pdf(raw_shop_id, *, download_pdf=_download_pdf, label_fet
 
     # A scan can occur while remote PDFs download. Never hand out a batch whose
     # orders have ceased to be fully ready before the download finishes.
-    final_pool = build_pool_plan(shop_id, respect_procurement_exclusion=False)
+    final_pool = build_pool_plan(shop_id, respect_procurement_exclusion=False, use_cache=False)
     still_ready = {row["id"] for row in ready_rows(shop_id, pool=final_pool) if row["label_state"] == "ready_to_scan"}
     if not set(order_ids).issubset(still_ready):
         raise ValidationError("下载期间发货队列发生变化，请刷新后重新生成面单")

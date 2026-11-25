@@ -497,13 +497,15 @@ def list_inventory(args):
     include_zero = str(args.get("include_zero") or "").lower() == "true"
     from app.services.inventory_pool_service import build_pool_plan, POOL_FIELDS
     pool = build_pool_plan(shop.id)
+    # Pool snapshots are shared across requests; never mutate the cached rows.
+    pool_rows = {key: dict(row) for key, row in pool["rows"].items()}
     if include_zero:
         for key, row in _stock_rows(shop.id, include_catalog=True).items():
-            if key not in pool["rows"]:
+            if key not in pool_rows:
                 row.update({field: 0 for field in POOL_FIELDS})
                 row.update(planning_orders=[], incoming_purchases=[], purchase_orders=[])
-                pool["rows"][key] = row
-    rows = list(pool["rows"].values())
+                pool_rows[key] = row
+    rows = list(pool_rows.values())
     for row in rows:
         row["reserved_quantity"] = 0
         row["available_quantity"] = row["on_hand_quantity"]
@@ -1005,7 +1007,7 @@ def auto_allocate_stock(shop_id, group_keys=None, *, commit=True):
     """
     from app.services.inventory_pool_service import build_pool_plan
 
-    pool = build_pool_plan(shop_id)
+    pool = build_pool_plan(shop_id, use_cache=False)
     return [{"order_id": order.id, "order_number": order.order_number,
              "group_key": line["group_key"], "quantity": line["quantity"]}
             for order in pool["orders"] for line in pool["allocations"][order.id]
