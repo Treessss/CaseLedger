@@ -118,6 +118,34 @@ def list_ready_orders(args):
     }
 
 
+def _scan_after_sale_by_record(shop_id, number, record):
+    from app.services.after_sale_service import scan_outbound as scan_after_sale_outbound
+    result = scan_after_sale_outbound({"shop_id": shop_id, "label_barcode": number})
+    return {"order_id": result["order_id"], "order_number": result["customer_reference"],
+            "warehouse_status": "shipped", "expected_parcel_count": 1,
+            "scanned_parcel_count": 1, "after_sale_id": result["id"]}
+
+
+def _supplement_scan_barcodes(shop_id, number):
+    """Look up a just-printed GV label when the scan landed before barcode sync.
+
+    The 4PX label endpoint is keyed by the tracking number, not by the printed
+    GV barcode.  Therefore the only safe recovery is to refetch the small set of
+    pending labels and then retry the same scan.  This runs only on a miss.
+    """
+    if len(number) < 8 or not number.startswith(("GV", "4PX", "OLS")):
+        return
+    from app.services.fourpx_barcode_sync_service import sync_after_sale_barcodes, sync_barcodes
+    try:
+        sync_after_sale_barcodes(shop_id, limit=20)
+    except Exception:  # noqa: BLE001 - fallback must not mask the real scan error
+        db.session.rollback()
+    try:
+        sync_barcodes(shop_id)
+    except Exception:  # noqa: BLE001 - fallback must not mask the real scan error
+        db.session.rollback()
+
+
 def scan_by_label(payload):
     shop_id = _shop_id(payload.get("shop_id"))
     number = normalize_label_code(payload.get("shipping_label_number"))
@@ -129,17 +157,23 @@ def scan_by_label(payload):
             raise ValidationError("物流面单条码过长，请重新扫描", extra={"scan_category": "label_error"})
         # CF labels take precedence over historical original-order labels.
         record = resolve_after_sale_label(shop_id, number)
+        parcel = None
+        if record is None:
+            parcel = find_parcel_by_code(shop_id, number)
+            if parcel is None:
+                # A label can be physically printed before its GV barcode has
+                # reached the local DB. Refetch only this shop's pending labels,
+                # then retry once before reporting a real miss.
+                _supplement_scan_barcodes(shop_id, number)
+                record = resolve_after_sale_label(shop_id, number)
+                if record is None:
+                    parcel = find_parcel_by_code(shop_id, number)
         if record is not None:
-            from app.services.after_sale_service import scan_outbound as scan_after_sale_outbound
             context = {"order_id": record.order_id, "after_sale_id": record.id,
                        "order_number": record.customer_reference}
-            result = scan_after_sale_outbound({"shop_id": shop_id, "label_barcode": number})
-            return {"order_id": result["order_id"], "order_number": result["customer_reference"],
-                    "warehouse_status": "shipped", "expected_parcel_count": 1,
-                    "scanned_parcel_count": 1, "after_sale_id": result["id"]}
-        parcel = find_parcel_by_code(shop_id, number)
+            return _scan_after_sale_by_record(shop_id, number, record)
         if parcel is None:
-            raise ValidationError("该店铺找不到此物流面单；请核对店铺与单号")
+            raise ValidationError("该店铺找不到此物流面单；已尝试补查 4PX 面单条码，请确认店铺与面单")
         context = {"order_id": parcel.order_id}
         result = scan_outbound(parcel.order_id, {"shipping_label_number": number})
         result["order_number"] = parcel.order.order_number

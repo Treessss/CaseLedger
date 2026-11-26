@@ -115,7 +115,7 @@ def sync_after_sale_barcodes(shop_id, after_sale_ids=None, *, limit=None, client
         AfterSale.shop_id == shop_id, AfterSale.deleted_at.is_(None),
         AfterSale.tracking_number.isnot(None),
         or_(AfterSale.label_barcode.is_(None), AfterSale.label_barcode == AfterSale.tracking_number),
-    )
+    ).order_by(AfterSale.id.desc())
     if after_sale_ids is not None:
         query = query.filter(AfterSale.id.in_(after_sale_ids))
     if limit:
